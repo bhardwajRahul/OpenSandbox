@@ -219,14 +219,31 @@ Canonicalization:
 
 #### 1. Configuration
 
-Extend `server/src/config.py` with auth/authz sections:
+Extend `server/src/config.py` with auth/authz sections.
+
+`auth.mode` controls high-level authentication behavior:
+
+- `"api_key_only"`: current behavior; only `OPEN-SANDBOX-API-KEY` auth is accepted.
+- `"api_key_and_user"`: dual path; API key auth remains for SDK/automation, and user-authenticated requests are also accepted for Console access.
+
+`user_mode` controls how user identity is extracted when `auth.mode = "api_key_and_user"`:
+
+- Phase 1 supports `"trusted_header"` only.
+- When `auth.mode = "api_key_only"`, `user_mode` is ignored.
 
 ```toml
 [auth]
+# Allowed values:
+# - "api_key_only"
+# - "api_key_and_user"
 mode = "api_key_only"
+
+# Used only when auth.mode = "api_key_and_user".
+# Phase 1 supports "trusted_header".
 user_mode = "trusted_header"
 
 [auth.trusted_header]
+# Used when user_mode = "trusted_header".
 user_header = "X-OpenSandbox-User"
 team_header = "X-OpenSandbox-Team"
 roles_header = "X-OpenSandbox-Roles"
