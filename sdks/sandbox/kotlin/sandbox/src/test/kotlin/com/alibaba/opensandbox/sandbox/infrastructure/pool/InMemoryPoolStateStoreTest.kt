@@ -146,7 +146,7 @@ class InMemoryPoolStateStoreTest {
     fun `reapExpiredIdle removes expired entries`() {
         store.putIdle(poolName, "id-1")
         store.reapExpiredIdle(poolName, java.time.Instant.now().plus(java.time.Duration.ofHours(25)))
-        assertEquals(StoreCounters(0), store.snapshotCounters(poolName))
+        assertEquals(0, store.snapshotCounters(poolName).idleCount)
     }
 
     @Test

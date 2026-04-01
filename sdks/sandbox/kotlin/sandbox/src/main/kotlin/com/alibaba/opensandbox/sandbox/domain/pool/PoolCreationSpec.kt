@@ -36,7 +36,7 @@ import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.Volume
  * @property networkPolicy Optional outbound network policy.
  * @property volumes Optional volume mounts.
  */
-data class PoolCreationSpec(
+class PoolCreationSpec private constructor(
     val imageSpec: SandboxImageSpec,
     val entrypoint: List<String> = DEFAULT_ENTRYPOINT,
     val resource: Map<String, String> = DEFAULT_RESOURCE,

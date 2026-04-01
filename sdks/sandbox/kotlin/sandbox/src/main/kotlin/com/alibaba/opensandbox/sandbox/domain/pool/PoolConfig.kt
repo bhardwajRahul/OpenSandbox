@@ -49,7 +49,7 @@ import kotlin.math.ceil
  * @property warmupSkipHealthCheck When true, skip readiness checks for pool-created sandboxes (default: false).
  * @property drainTimeout Max wait during graceful shutdown for in-flight ops (default: 30s).
  */
-data class PoolConfig(
+class PoolConfig private constructor(
     val poolName: String,
     val ownerId: String,
     val maxIdle: Int,
@@ -104,6 +104,31 @@ data class PoolConfig(
 
         @JvmStatic
         fun builder(): Builder = Builder()
+    }
+
+    internal fun withMaxIdle(maxIdle: Int): PoolConfig {
+        return PoolConfig(
+            poolName = poolName,
+            ownerId = ownerId,
+            maxIdle = maxIdle,
+            warmupConcurrency = warmupConcurrency,
+            primaryLockTtl = primaryLockTtl,
+            stateStore = stateStore,
+            connectionConfig = connectionConfig,
+            creationSpec = creationSpec,
+            reconcileInterval = reconcileInterval,
+            degradedThreshold = degradedThreshold,
+            acquireReadyTimeout = acquireReadyTimeout,
+            acquireHealthCheckPollingInterval = acquireHealthCheckPollingInterval,
+            acquireHealthCheck = acquireHealthCheck,
+            acquireSkipHealthCheck = acquireSkipHealthCheck,
+            warmupReadyTimeout = warmupReadyTimeout,
+            warmupHealthCheckPollingInterval = warmupHealthCheckPollingInterval,
+            warmupHealthCheck = warmupHealthCheck,
+            warmupSandboxPreparer = warmupSandboxPreparer,
+            warmupSkipHealthCheck = warmupSkipHealthCheck,
+            drainTimeout = drainTimeout,
+        )
     }
 
     class Builder {

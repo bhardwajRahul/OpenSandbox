@@ -28,7 +28,7 @@ package com.alibaba.opensandbox.sandbox.domain.pool
  * @property lastError Last error message if pool is DEGRADED or after failure; null otherwise.
  * @property inFlightOperations Number of pool operations currently in flight on this node.
  */
-data class PoolSnapshot(
+class PoolSnapshot(
     val state: PoolState,
     val lifecycleState: PoolLifecycleState,
     val idleCount: Int,

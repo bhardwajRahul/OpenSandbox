@@ -387,7 +387,7 @@ class SandboxPool internal constructor(
         beginOperation()
         try {
             if (lifecycleState.get() != LifecycleState.RUNNING) return
-            val reconcileConfig = config.copy(maxIdle = resolveMaxIdle())
+            val reconcileConfig = config.withMaxIdle(resolveMaxIdle())
             PoolReconciler.runReconcileTick(
                 config = reconcileConfig,
                 stateStore = stateStore,

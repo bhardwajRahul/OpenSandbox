@@ -21,7 +21,7 @@ import java.time.Instant
 /**
  * Idle entry stored in the pool state store.
  */
-data class IdleEntry(
+class IdleEntry(
     val sandboxId: String,
     val expiresAt: Instant,
 )
