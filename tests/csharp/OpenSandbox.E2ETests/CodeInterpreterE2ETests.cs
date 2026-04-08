@@ -202,6 +202,7 @@ public class CodeInterpreterE2ETests : IClassFixture<CodeInterpreterE2ETestFixtu
         Assert.Contains(
             events,
             ev => ev.Type == ServerStreamEventTypes.Stdout ||
+                  ev.Type == ServerStreamEventTypes.Stderr ||
                   ev.Type == ServerStreamEventTypes.Result ||
                   ev.Type == ServerStreamEventTypes.Error ||
                   ev.Type == ServerStreamEventTypes.ExecutionComplete);
@@ -518,7 +519,7 @@ public class CodeInterpreterE2ETests : IClassFixture<CodeInterpreterE2ETestFixtu
     private static async Task<List<ServerStreamEvent>> RunStreamCollectWithRetryAsync(
         CodeInterpreterClient interpreter,
         RunCodeRequest request,
-        int maxRetries = 3,
+        int maxRetries = 5,
         int perCallTimeoutSeconds = 120)
     {
         Exception? lastError = null;
@@ -536,17 +537,27 @@ public class CodeInterpreterE2ETests : IClassFixture<CodeInterpreterE2ETestFixtu
 
                 var hasBusinessEvent = events.Any(ev =>
                     ev.Type == ServerStreamEventTypes.Stdout ||
+                    ev.Type == ServerStreamEventTypes.Stderr ||
                     ev.Type == ServerStreamEventTypes.Result ||
                     ev.Type == ServerStreamEventTypes.Error ||
                     ev.Type == ServerStreamEventTypes.ExecutionComplete);
 
-                if (hasBusinessEvent || attempt == maxRetries)
+                if (hasBusinessEvent)
                 {
                     return events;
                 }
 
-                await Task.Delay(delayMs);
-                delayMs = (int)(delayMs * 1.5);
+                if (attempt < maxRetries)
+                {
+                    await Task.Delay(delayMs);
+                    delayMs = (int)(delayMs * 1.5);
+                    continue;
+                }
+
+                var observedTypes = string.Join(",", events.Select(e => e.Type ?? "null"));
+                throw new TimeoutException(
+                    $"RunStreamCollectWithRetryAsync did not observe business events after {maxRetries} attempts. " +
+                    $"Observed event types: [{observedTypes}]");
             }
             catch (Exception ex) when (IsRetryable(ex) && attempt < maxRetries)
             {

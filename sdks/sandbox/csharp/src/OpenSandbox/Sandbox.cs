@@ -163,6 +163,7 @@ public sealed class Sandbox : IAsyncDisposable
             ResourceLimits = options.Resource ?? Constants.DefaultResourceLimits,
             Env = options.Env,
             Metadata = options.Metadata,
+            Platform = options.Platform,
             NetworkPolicy = options.NetworkPolicy != null
                 ? new NetworkPolicy
                 {
