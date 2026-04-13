@@ -138,7 +138,13 @@ async def test_create_sandbox_applies_security_defaults(mock_docker):
     with (
         patch.object(service, "_ensure_image_available"),
         patch.object(service, "_prepare_sandbox_runtime"),
-        patch.object(service, "_allocate_distinct_host_ports", return_value=(40001, 40002)),
+        patch(
+            "opensandbox_server.services.docker.allocate_port_bindings",
+            return_value={
+                "44772": ("0.0.0.0", 40001),
+                "8080": ("0.0.0.0", 40002),
+            },
+        ),
     ):
         await service.create_sandbox(request)
 
@@ -541,7 +547,13 @@ async def test_egress_sidecar_injection_and_capabilities(mock_docker):
 
     with (
         patch("opensandbox_server.services.docker.generate_egress_token", return_value="egress-token"),
-        patch.object(service, "_allocate_distinct_host_ports", return_value=(44772, 8080)),
+        patch(
+            "opensandbox_server.services.docker.allocate_port_bindings",
+            return_value={
+                "44772": ("0.0.0.0", 44772),
+                "8080": ("0.0.0.0", 8080),
+            },
+        ),
         patch.object(service, "_ensure_image_available"),
         patch.object(service, "_prepare_sandbox_runtime"),
     ):
@@ -667,7 +679,13 @@ async def test_create_sandbox_user_defined_network_uses_correct_network_mode(moc
     with (
         patch.object(service, "_ensure_image_available"),
         patch.object(service, "_prepare_sandbox_runtime"),
-        patch.object(service, "_allocate_distinct_host_ports", return_value=(40001, 40002)),
+        patch(
+            "opensandbox_server.services.docker.allocate_port_bindings",
+            return_value={
+                "44772": ("0.0.0.0", 40001),
+                "8080": ("0.0.0.0", 40002),
+            },
+        ),
     ):
         await service.create_sandbox(request)
 
@@ -1208,6 +1226,12 @@ async def test_create_sandbox_windows_profile_injects_runtime_defaults(mock_dock
     assert "NET_RAW" in host_config_kwargs["cap_add"]
     assert not any(bind.endswith(":/storage:rw") for bind in host_config_kwargs["binds"])
     assert any(bind.endswith(":/oem:rw") for bind in host_config_kwargs["binds"])
+    port_bindings = host_config_kwargs["port_bindings"]
+    assert "44772" in port_bindings
+    assert "8080" in port_bindings
+    assert "3389/tcp" in port_bindings
+    assert "3389/udp" in port_bindings
+    assert "8006/tcp" in port_bindings
 
 
 @pytest.mark.asyncio
@@ -1356,7 +1380,7 @@ async def test_create_sandbox_windows_profile_accepts_dockur_demo_like_request(m
 
     forwarded_env = mock_create.call_args.args[4]
     assert "VERSION=11" in forwarded_env
-    assert "USER_PORTS=44772,8080" in forwarded_env
+    assert "USER_PORTS=44772,8080,3389,8006" in forwarded_env
     assert response.platform is not None
     assert response.platform.os == "windows"
     assert response.platform.arch == "amd64"

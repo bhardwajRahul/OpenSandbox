@@ -28,7 +28,6 @@ import logging
 import math
 import os
 import posixpath
-import random
 import socket
 import tarfile
 import time
@@ -64,6 +63,7 @@ from opensandbox_server.api.schema import (
 )
 from opensandbox_server.config import AppConfig, get_config
 from opensandbox_server.services.docker_diagnostics import DockerDiagnosticsMixin
+from opensandbox_server.services.docker_port_allocator import allocate_port_bindings
 from opensandbox_server.services.docker_windows_profile import (
     apply_windows_runtime_host_config_defaults,
     fetch_execd_install_bat,
@@ -886,22 +886,6 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             expires_at = calculate_expiration_or_raise(created_at, request.timeout)
         return sandbox_id, created_at, expires_at
 
-    @staticmethod
-    def _allocate_host_port(
-        min_port: int = 40000, max_port: int = 60000, attempts: int = 50
-    ) -> Optional[int]:
-        """Find an available TCP port on the host within the given range."""
-        for _ in range(attempts):
-            port = random.randint(min_port, max_port)
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                try:
-                    sock.bind(("0.0.0.0", port))
-                except OSError:
-                    continue
-                return port
-        return None
-
     async def create_sandbox(self, request: CreateSandboxRequest) -> CreateSandboxResponse:
         """
         Create a new sandbox from a container image using Docker.
@@ -1201,7 +1185,9 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             if request.network_policy:
                 egress_token = generate_egress_token()
                 labels[SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY] = egress_token
-                host_execd_port, host_http_port = self._allocate_distinct_host_ports()
+                sidecar_port_bindings = allocate_port_bindings(["44772", "8080"])
+                host_execd_port = sidecar_port_bindings["44772"][1]
+                host_http_port = sidecar_port_bindings["8080"][1]
                 sidecar_container = self._start_egress_sidecar(
                     sandbox_id=sandbox_id,
                     network_policy=request.network_policy,
@@ -1224,13 +1210,15 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
                     mem_limit, nano_cpus, self.network_mode
                 )
                 if self.network_mode != HOST_NETWORK_MODE:
-                    host_execd_port, host_http_port = self._allocate_distinct_host_ports()
-                    port_bindings = {
-                        "44772": ("0.0.0.0", host_execd_port),
-                        "8080": ("0.0.0.0", host_http_port),
-                    }
+                    exposed_ports = ["44772", "8080"]
+                    if requested_windows_profile:
+                        # dockur/windows exposes RDP and noVNC/web UI on these ports.
+                        # https://github.com/dockur/windows/blob/master/Dockerfile
+                        exposed_ports.extend(["3389/tcp", "3389/udp", "8006/tcp"])
+                    port_bindings = allocate_port_bindings(exposed_ports)
+                    host_execd_port = port_bindings["44772"][1]
+                    host_http_port = port_bindings["8080"][1]
                     host_config_kwargs["port_bindings"] = port_bindings
-                    exposed_ports = list(port_bindings.keys())
                     labels[SANDBOX_EMBEDDING_PROXY_PORT_LABEL] = str(host_execd_port)
                     labels[SANDBOX_HTTP_PORT_LABEL] = str(host_http_port)
 
@@ -2173,29 +2161,6 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             )
             host_config_kwargs["runtime"] = self.docker_runtime
         return host_config_kwargs
-
-    def _allocate_distinct_host_ports(self) -> tuple[int, int]:
-        host_execd_port = self._allocate_host_port()
-        host_http_port = self._allocate_host_port()
-        if host_execd_port is None or host_http_port is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={
-                    "code": SandboxErrorCodes.CONTAINER_START_FAILED,
-                    "message": "Failed to allocate host ports for sandbox container.",
-                },
-            )
-        while host_http_port == host_execd_port:
-            host_http_port = self._allocate_host_port()
-            if host_http_port is None:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail={
-                        "code": SandboxErrorCodes.CONTAINER_START_FAILED,
-                        "message": "Failed to allocate distinct host ports for sandbox container.",
-                    },
-                )
-        return host_execd_port, host_http_port
 
     def _cleanup_egress_sidecar(self, sandbox_id: str) -> None:
         """
