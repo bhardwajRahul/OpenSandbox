@@ -1171,6 +1171,13 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
 
         sidecar_container = None
         try:
+            # For dockur/windows profile, resourceLimits are translated to
+            # guest envs (RAM_SIZE/CPU_CORES/DISK_SIZE). Avoid applying
+            # container cgroup memory/cpu limits to the outer Linux container,
+            # which can OOM-kill QEMU during installation/runtime.
+            effective_mem_limit = None if requested_windows_profile else mem_limit
+            effective_nano_cpus = None if requested_windows_profile else nano_cpus
+
             # Build volume bind mounts from request volumes.
             # pvc_inspect_cache carries Docker volume inspect data from the
             # validation phase, avoiding a redundant API call.
@@ -1195,7 +1202,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
                 labels[SANDBOX_EMBEDDING_PROXY_PORT_LABEL] = str(host_execd_port)
                 labels[SANDBOX_HTTP_PORT_LABEL] = str(host_http_port)
                 host_config_kwargs = self._base_host_config_kwargs(
-                    mem_limit, nano_cpus, f"container:{sidecar_container.id}"
+                    effective_mem_limit, effective_nano_cpus, f"container:{sidecar_container.id}"
                 )
                 # Drop NET_ADMIN for the main container; only the sidecar should keep it
                 cap_drop = set(host_config_kwargs.get("cap_drop") or [])
@@ -1204,7 +1211,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
                     host_config_kwargs["cap_drop"] = list(cap_drop)
             else:
                 host_config_kwargs = self._base_host_config_kwargs(
-                    mem_limit, nano_cpus, self.network_mode
+                    effective_mem_limit, effective_nano_cpus, self.network_mode
                 )
                 if self.network_mode != HOST_NETWORK_MODE:
                     exposed_ports = ["44772", "8080"]

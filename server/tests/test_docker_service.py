@@ -1389,11 +1389,14 @@ async def test_create_sandbox_windows_profile_accepts_dockur_demo_like_request(m
         response = await service.create_sandbox(request)
 
     forwarded_env = mock_create.call_args.args[4]
+    host_config_kwargs = mock_create.call_args.args[5]
     assert "VERSION=11" in forwarded_env
     assert "CPU_CORES=4" in forwarded_env
     assert "RAM_SIZE=8G" in forwarded_env
     assert "DISK_SIZE=64G" in forwarded_env
     assert "USER_PORTS=44772,8080,3389,8006" in forwarded_env
+    assert "mem_limit" not in host_config_kwargs
+    assert "nano_cpus" not in host_config_kwargs
     assert response.platform is not None
     assert response.platform.os == "windows"
     assert response.platform.arch == "amd64"
