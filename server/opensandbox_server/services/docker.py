@@ -1049,9 +1049,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
         sandbox_id: str,
         platform: Optional[PlatformSpec] = None,
     ) -> None:
-        docker_platform = None
-        if platform is not None:
-            docker_platform = f"{platform.os}/{platform.arch}"
+        docker_platform = resolve_docker_platform(platform)
         try:
             with self._docker_operation(f"pull image {image_uri}", sandbox_id):
                 pull_kwargs: dict[str, Any] = {"auth_config": auth_config}
@@ -1087,7 +1085,11 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
         sandbox_id: str,
         platform: Optional[PlatformSpec] = None,
     ) -> None:
-        expected_platform = platform or self._get_daemon_platform()
+        expected_platform = platform
+        if expected_platform is not None and is_windows_platform(expected_platform):
+            expected_platform = None
+        if expected_platform is None:
+            expected_platform = self._get_daemon_platform()
         try:
             with self._docker_operation(f"inspect image {image_uri}", sandbox_id):
                 image = self.docker_client.images.get(image_uri)

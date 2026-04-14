@@ -386,6 +386,47 @@ def test_pull_image_passes_platform_to_docker_api(mock_docker):
     )
 
 @patch("opensandbox_server.services.docker.docker")
+def test_pull_image_skips_platform_for_windows_profile(mock_docker):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_docker.from_env.return_value = mock_client
+
+    service = DockerSandboxService(config=_app_config())
+    service._pull_image(
+        image_uri="dockurr/windows:latest",
+        auth_config=None,
+        sandbox_id="sandbox-win-1",
+        platform=PlatformSpec(os="windows", arch="amd64"),
+    )
+
+    mock_client.images.pull.assert_called_once_with(
+        "dockurr/windows:latest",
+        auth_config=None,
+    )
+
+@patch("opensandbox_server.services.docker.docker")
+def test_ensure_image_available_skips_windows_platform_mismatch_repull(mock_docker):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_docker.from_env.return_value = mock_client
+
+    cached_image = MagicMock()
+    cached_image.attrs = {"Os": "linux", "Architecture": "amd64"}
+    mock_client.images.get.return_value = cached_image
+    mock_client.info.return_value = {"OSType": "linux", "Architecture": "amd64"}
+
+    service = DockerSandboxService(config=_app_config())
+    with patch.object(service, "_pull_image") as mock_pull:
+        service._ensure_image_available(
+            "dockurr/windows:latest",
+            auth_config=None,
+            sandbox_id="sandbox-win-1",
+            platform=PlatformSpec(os="windows", arch="amd64"),
+        )
+
+    mock_pull.assert_not_called()
+
+@patch("opensandbox_server.services.docker.docker")
 def test_fetch_execd_archive_caches_by_platform_key(mock_docker):
     mock_client = MagicMock()
     mock_client.containers.list.return_value = []
