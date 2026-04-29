@@ -73,7 +73,10 @@ jobs:
 
               let tip = "";
               const suggestedSet = new Set(suggested);
-              const otherLabels = allLabels.filter(l => !suggestedSet.has(l.name));
+              const allow = ["bug", "documentation", "feature", "dependencies", "packages"];
+              const otherLabels = allLabels.filter(l =>
+                !suggestedSet.has(l.name) && allow.includes(l.name)
+              );
               if (suggested.length > 0) {
                 tip = `\n\n📋 **Recommended labels** (based on changed files):\n`;
                 for (const name of suggested) {
