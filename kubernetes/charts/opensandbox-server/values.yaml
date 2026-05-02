@@ -12,6 +12,14 @@ namespaceOverride: ""
 # -- Image pull secrets for the server deployment. Each entry: {name: <secret-name>}.
 imagePullSecrets: []
 
+# -- Additional environment variables for the server container.
+extraEnv: []
+# - name: OPENSANDBOX_SERVER_API_KEY
+#   valueFrom:
+#     secretKeyRef:
+#       name: opensandbox-api-key
+#       key: api-key
+
 # Server configuration
 server:
   # -- Server image configuration
