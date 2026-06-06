@@ -267,8 +267,16 @@ internal sealed class FilesystemAdapter : ISandboxFiles
                 New = e.NewContent
             });
 
-        var response = await _client.PostAsync<Dictionary<string, ReplaceFileContentResult>>(
-            "/files/replace", body, cancellationToken).ConfigureAwait(false);
+        Dictionary<string, ReplaceFileContentResult> response;
+        try
+        {
+            response = await _client.PostAsync<Dictionary<string, ReplaceFileContentResult>>(
+                "/files/replace", body, cancellationToken).ConfigureAwait(false);
+        }
+        catch (JsonException)
+        {
+            return Array.Empty<ContentReplaceResult>();
+        }
 
         return response.Select(kv => new ContentReplaceResult
         {

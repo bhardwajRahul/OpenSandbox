@@ -40,6 +40,8 @@ import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.isFileN
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.parseSandboxError
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.toSandboxException
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import okhttp3.Headers.Companion.toHeaders
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -345,7 +347,7 @@ internal class FilesystemAdapter(
                     parsed.map { (path, result) ->
                         ContentReplaceResult(
                             path = path,
-                            replacedCount = result["replacedCount"]?.toString()?.toIntOrNull() ?: 0,
+                            replacedCount = result["replacedCount"]?.jsonPrimitive?.intOrNull ?: 0,
                         )
                     }
                 }

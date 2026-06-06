@@ -289,12 +289,18 @@ class FilesystemAdapterSync(FilesystemSync):
 
     def replace_contents(self, entries: list[ContentReplaceEntry]) -> list[ContentReplaceResult]:
         try:
+            from json import JSONDecodeError
+
             from opensandbox.api.execd.api.filesystem import replace_content
 
-            response_obj = replace_content.sync_detailed(
-                client=self._client,
-                body=FilesystemModelConverter.to_api_replace_content_body(entries),
-            )
+            try:
+                response_obj = replace_content.sync_detailed(
+                    client=self._client,
+                    body=FilesystemModelConverter.to_api_replace_content_body(entries),
+                )
+            except JSONDecodeError:
+                return []
+
             handle_api_error(response_obj, "Replace contents")
 
             return FilesystemModelConverter.to_replace_results(response_obj.parsed)

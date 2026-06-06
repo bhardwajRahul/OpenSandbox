@@ -347,6 +347,11 @@ func (c *FilesystemController) ReplaceContent() {
 		}
 		mode := fileInfo.Mode()
 
+		if item.Old == "" {
+			c.RespondError(http.StatusBadRequest, model.ErrorCodeInvalidRequest, "old content must not be empty")
+			return
+		}
+
 		contentStr := string(content)
 		count := strings.Count(contentStr, item.Old)
 		newContent := strings.ReplaceAll(contentStr, item.Old, item.New)

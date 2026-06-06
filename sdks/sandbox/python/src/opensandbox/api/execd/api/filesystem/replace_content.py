@@ -50,9 +50,6 @@ def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
 ) -> ErrorResponse | ReplaceContentResponse200 | None:
     if response.status_code == 200:
-        # Backward compat: older execd versions return 200 with empty body
-        if not response.content or not response.content.strip():
-            return ReplaceContentResponse200()
         response_200 = ReplaceContentResponse200.from_dict(response.json())
 
         return response_200
