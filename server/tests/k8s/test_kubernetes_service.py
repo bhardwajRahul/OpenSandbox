@@ -444,6 +444,27 @@ class TestKubernetesSandboxServiceCreate:
         assert response.platform.os == "linux"
         assert response.platform.arch == "arm64"
 
+    def test_get_endpoint_resolve_internal_uses_pod_ip_even_in_gateway_mode(
+        self, k8s_service
+    ):
+        k8s_service.workload_provider.get_workload.return_value = {
+            "metadata": {
+                "annotations": {
+                    "sandbox.opensandbox.io/endpoints": '["10.0.0.1"]',
+                }
+            }
+        }
+        k8s_service.workload_provider.get_endpoint_info.return_value = Endpoint(
+            endpoint="gateway.example.com",
+            headers={"OpenSandbox-Ingress-To": "sbx-123-44772"},
+        )
+
+        endpoint = k8s_service.get_endpoint("sbx-123", 44772, resolve_internal=True)
+
+        assert endpoint.endpoint == "10.0.0.1:44772"
+        assert endpoint.headers is None
+
+
     def test_get_endpoint_keeps_instance_egress_auth_header_private_for_workload_ports(
         self, k8s_service
     ):
