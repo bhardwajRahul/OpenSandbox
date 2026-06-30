@@ -775,6 +775,10 @@ export interface components {
             metadata?: {
                 [key: string]: string;
             };
+            /** @description Opaque extension data restored from provider-specific storage */
+            extensions?: {
+                [key: string]: string;
+            };
             /**
              * @description Platform constraint echoed from request or workload template.
              *     Null when no scheduling constraint is provided.
@@ -873,6 +877,10 @@ export interface components {
             status: components["schemas"]["SandboxStatus"];
             /** @description Custom metadata from creation request */
             metadata?: {
+                [key: string]: string;
+            };
+            /** @description Opaque extension data restored from provider-specific storage */
+            extensions?: {
                 [key: string]: string;
             };
             /**

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import pytest
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 from fastapi import HTTPException
@@ -130,6 +131,80 @@ class TestKubernetesSandboxServiceCreate:
         assert response.id is not None
         assert response.status.state == "Running"
         k8s_service.workload_provider.create_workload.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_create_sandbox_response_restores_extensions_from_workload(
+        self, k8s_service, create_sandbox_request, mock_workload
+    ):
+        create_sandbox_request.extensions = {
+            "opensandbox.extensions.custom-label": "中文数据",
+        }
+        mock_workload["metadata"]["annotations"] = {
+            "opensandbox.io/extensions.custom-label": "中文数据",
+        }
+        k8s_service.workload_provider.create_workload.return_value = {
+            "name": "test-sandbox-123",
+            "uid": "abc-123",
+        }
+        k8s_service.workload_provider.get_workload.return_value = mock_workload
+        k8s_service.workload_provider.get_status.return_value = {
+            "state": "Running",
+            "reason": "",
+            "message": "Pod is running",
+            "last_transition_at": datetime.now(timezone.utc),
+        }
+        k8s_service.workload_provider.get_expiration.return_value = datetime.now(timezone.utc) + timedelta(hours=1)
+
+        response = await k8s_service.create_sandbox(create_sandbox_request)
+
+        assert response.extensions == {
+            "opensandbox.extensions.custom-label": "中文数据",
+        }
+
+    @pytest.mark.asyncio
+    async def test_create_sandbox_response_ignores_non_dict_workload_annotations(
+        self, k8s_service, create_sandbox_request
+    ):
+        workload = SimpleNamespace(
+            metadata=SimpleNamespace(annotations=["not", "a", "mapping"]),
+            spec=SimpleNamespace(),
+        )
+        k8s_service.workload_provider.create_workload.return_value = {
+            "name": "test-sandbox-123",
+            "uid": "abc-123",
+        }
+        k8s_service.workload_provider.get_workload.return_value = workload
+        k8s_service.workload_provider.get_status.return_value = {
+            "state": "Running",
+            "reason": "",
+            "message": "Pod is running",
+            "last_transition_at": datetime.now(timezone.utc),
+        }
+
+        response = await k8s_service.create_sandbox(create_sandbox_request)
+
+        assert response.extensions is None
+
+    def test_list_sandboxes_restores_extensions_from_workloads(self, k8s_service, mock_workload):
+        mock_workload["metadata"]["annotations"] = {
+            "opensandbox.io/extensions.custom-label": "中文数据",
+        }
+        k8s_service.workload_provider.list_workloads.return_value = [mock_workload]
+        k8s_service.workload_provider.get_status.return_value = {
+            "state": "Running",
+            "reason": "",
+            "message": "Running",
+            "last_transition_at": datetime.now(timezone.utc),
+        }
+        k8s_service.workload_provider.get_expiration.return_value = datetime.now(timezone.utc) + timedelta(hours=1)
+
+        from opensandbox_server.api.schema import PaginationRequest
+        request = ListSandboxesRequest(pagination=PaginationRequest(page=1, page_size=20))
+        response = k8s_service.list_sandboxes(request)
+
+        assert response.items[0].extensions == {
+            "opensandbox.extensions.custom-label": "中文数据",
+        }
 
     @pytest.mark.asyncio
     async def test_create_sandbox_normalizes_allocated_status_to_running(

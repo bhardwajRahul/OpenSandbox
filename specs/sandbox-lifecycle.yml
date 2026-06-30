@@ -846,6 +846,12 @@ components:
             type: string
           description: Custom metadata from creation request
 
+        extensions:
+          type: object
+          additionalProperties:
+            type: string
+          description: Opaque extension data restored from provider-specific storage
+
         platform:
           $ref: '#/components/schemas/PlatformSpec'
           description: |
@@ -996,6 +1002,12 @@ components:
           additionalProperties:
             type: string
           description: Custom metadata from creation request
+
+        extensions:
+          type: object
+          additionalProperties:
+            type: string
+          description: Opaque extension data restored from provider-specific storage
 
         entrypoint:
           type: array

@@ -22,6 +22,7 @@ from opensandbox_server.extensions import (
     ACCESS_RENEW_EXTEND_SECONDS_MIN,
     apply_access_renew_extend_seconds_to_mapping,
     apply_extensions_to_annotations,
+    extract_extensions_from_annotations,
     validate_extensions
 )
 
@@ -156,3 +157,28 @@ class TestExtensionsToAnnotations:
             "existing": "value",
             "opensandbox.io/extensions.new-key": "new-value",
         }
+
+
+class TestExtensionsFromAnnotations:
+    def test_restores_prefixed_annotations(self):
+        annotations = {
+            "opensandbox.io/extensions.custom-key": "custom-value",
+            "opensandbox.io/extensions.localized": "中文数据",
+        }
+
+        assert extract_extensions_from_annotations(annotations) == {
+            "opensandbox.extensions.custom-key": "custom-value",
+            "opensandbox.extensions.localized": "中文数据",
+        }
+
+    def test_ignores_non_extension_annotations(self):
+        annotations = {
+            "opensandbox.io/access-renew-extend-seconds": "1800",
+            "other": "value",
+        }
+
+        assert extract_extensions_from_annotations(annotations) is None
+
+    def test_empty_annotations_return_none(self):
+        assert extract_extensions_from_annotations({}) is None
+        assert extract_extensions_from_annotations(None) is None
