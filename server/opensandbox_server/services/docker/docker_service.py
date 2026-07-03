@@ -29,7 +29,6 @@ import math
 import os
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from threading import Lock, Thread, Timer
 from typing import Any, Dict, Optional
@@ -44,7 +43,6 @@ from opensandbox_server.extensions import (
     ISOLATION_UPPER_MOUNT_PATH,
     extract_extensions_from_mapping,
 )
-from opensandbox_server.extensions.keys import EXTENSIONS_ANNOTATION_PREFIX
 from opensandbox_server.api.schema import (
     CreateSandboxRequest,
     CreateSandboxResponse,
@@ -124,17 +122,6 @@ from opensandbox_server.services.validators import (
 )
 logger = logging.getLogger(__name__)
 
-PENDING_FAILURE_TTL_SECONDS = int(os.environ.get("PENDING_FAILURE_TTL", "3600"))
-
-
-@dataclass
-class PendingSandbox:
-    request: CreateSandboxRequest
-    created_at: datetime
-    expires_at: Optional[datetime]
-    status: SandboxStatus
-
-
 class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVolumesMixin, DockerNetworkingMixin, DockerContainerOpsMixin, OSSFSMixin, SandboxService, ExtensionService):
     """
     Docker-based implementation of SandboxService.
@@ -212,9 +199,6 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
         self._bootstrap_script_lock = Lock()
         self._sandbox_expirations: Dict[str, datetime] = {}
         self._expiration_timers: Dict[str, Timer] = {}
-        self._pending_sandboxes: Dict[str, PendingSandbox] = {}
-        self._pending_lock = Lock()
-        self._pending_cleanup_timers: Dict[str, Timer] = {}
         self._ossfs_mount_lock = Lock()
         self._ossfs_mount_ref_counts: Dict[str, int] = {}
         self._restore_existing_sandboxes()
@@ -689,128 +673,6 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
                 },
             ) from e
 
-    def _async_provision_worker(
-        self,
-        sandbox_id: str,
-        request: CreateSandboxRequest,
-        created_at: datetime,
-        expires_at: Optional[datetime],
-        pvc_inspect_cache: Optional[dict[str, dict]] = None,
-    ) -> None:
-        try:
-            self._provision_sandbox(sandbox_id, request, created_at, expires_at, pvc_inspect_cache)
-        except HTTPException as exc:
-            message = exc.detail.get("message") if isinstance(exc.detail, dict) else str(exc)
-            self._mark_pending_failed(sandbox_id, message or "Sandbox provisioning failed.")
-            self._cleanup_failed_containers(sandbox_id)
-            self._schedule_pending_cleanup(sandbox_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Unexpected error provisioning sandbox %s: %s", sandbox_id, exc)
-            self._mark_pending_failed(sandbox_id, str(exc))
-            self._cleanup_failed_containers(sandbox_id)
-            self._schedule_pending_cleanup(sandbox_id)
-        else:
-            self._remove_pending_sandbox(sandbox_id)
-
-    def _mark_pending_failed(self, sandbox_id: str, message: str) -> None:
-        with self._pending_lock:
-            pending = self._pending_sandboxes.get(sandbox_id)
-            if not pending:
-                return
-            pending.status = SandboxStatus(
-                state="Failed",
-                reason="PROVISIONING_ERROR",
-                message=message,
-                last_transition_at=datetime.now(timezone.utc),
-            )
-
-    def _cleanup_failed_containers(self, sandbox_id: str) -> None:
-        """
-        Best-effort cleanup for containers left behind after a failed provision.
-        """
-        label_selector = f"{SANDBOX_ID_LABEL}={sandbox_id}"
-        try:
-            containers = self.docker_client.containers.list(
-                all=True, filters={"label": label_selector}
-            )
-        except DockerException as exc:
-            logger.warning("sandbox=%s | cleanup listing failed containers: %s", sandbox_id, exc)
-            self._cleanup_egress_sidecar(sandbox_id)
-            return
-
-        for container in containers:
-            labels = container.attrs.get("Config", {}).get("Labels") or {}
-            mount_keys_raw = labels.get(SANDBOX_OSSFS_MOUNTS_LABEL, "[]")
-            try:
-                mount_keys: list[str] = json.loads(mount_keys_raw)
-            except (TypeError, json.JSONDecodeError):
-                mount_keys = []
-            try:
-                with self._docker_operation("cleanup failed sandbox container", sandbox_id):
-                    container.remove(force=True)
-            except DockerException as exc:
-                logger.warning(
-                    "sandbox=%s | failed to remove leftover container %s: %s",
-                    sandbox_id,
-                    container.id,
-                    exc,
-                )
-            finally:
-                self._release_ossfs_mounts(mount_keys)
-        # Always attempt to cleanup sidecar as well
-        self._cleanup_egress_sidecar(sandbox_id)
-
-    def _remove_pending_sandbox(self, sandbox_id: str) -> None:
-        with self._pending_lock:
-            timer = self._pending_cleanup_timers.pop(sandbox_id, None)
-            if timer:
-                timer.cancel()
-            self._pending_sandboxes.pop(sandbox_id, None)
-
-    def _get_pending_sandbox(self, sandbox_id: str) -> Optional[PendingSandbox]:
-        with self._pending_lock:
-            pending = self._pending_sandboxes.get(sandbox_id)
-            return pending
-
-    def _iter_pending_sandboxes(self) -> list[tuple[str, PendingSandbox]]:
-        with self._pending_lock:
-            return list(self._pending_sandboxes.items())
-
-    @staticmethod
-    def _pending_to_sandbox(sandbox_id: str, pending: PendingSandbox) -> Sandbox:
-        snapshot_id = getattr(pending.request, "snapshot_id", None)
-        if not isinstance(snapshot_id, str) or not snapshot_id:
-            snapshot_id = None
-        extensions = {
-            k: v for k, v in (pending.request.extensions or {}).items()
-            if k.startswith(EXTENSIONS_ANNOTATION_PREFIX)
-        } or None
-        return Sandbox(
-            id=sandbox_id,
-            image=None if snapshot_id else pending.request.image,
-            snapshotId=snapshot_id,
-            platform=pending.request.platform,
-            status=pending.status,
-            metadata=pending.request.metadata,
-            extensions=extensions,
-            entrypoint=pending.request.entrypoint,
-            expiresAt=pending.expires_at,
-            createdAt=pending.created_at,
-        )
-
-    def _schedule_pending_cleanup(self, sandbox_id: str) -> None:
-        def _cleanup():
-            self._remove_pending_sandbox(sandbox_id)
-
-        timer = Timer(PENDING_FAILURE_TTL_SECONDS, _cleanup)
-        timer.daemon = True
-        with self._pending_lock:
-            existing = self._pending_cleanup_timers.pop(sandbox_id, None)
-            if existing:
-                existing.cancel()
-            self._pending_cleanup_timers[sandbox_id] = timer
-        timer.start()
-
     def _provision_sandbox(
         self,
         sandbox_id: str,
@@ -1090,14 +952,6 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
             if matches_filter(sandbox_obj, request.filter):
                 sandboxes_by_id[sandbox_id] = sandbox_obj
 
-        for sandbox_id, pending in self._iter_pending_sandboxes():
-            if sandbox_id in container_ids:
-                # If a real container exists, prefer its state regardless of filter outcome.
-                continue
-            sandbox_obj = self._pending_to_sandbox(sandbox_id, pending)
-            if matches_filter(sandbox_obj, request.filter):
-                sandboxes_by_id[sandbox_id] = sandbox_obj
-
         sandboxes: list[Sandbox] = list(sandboxes_by_id.values())
 
         sandboxes.sort(key=lambda s: s.created_at or datetime.min, reverse=True)
@@ -1139,16 +993,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
         Raises:
             HTTPException: If sandbox not found
         """
-        # Prefer real container state; fall back to pending record only if no container exists.
-        try:
-            container = self._get_container_by_sandbox_id(sandbox_id)
-        except HTTPException as exc:
-            if exc.status_code != status.HTTP_404_NOT_FOUND:
-                raise
-            pending = self._get_pending_sandbox(sandbox_id)
-            if pending:
-                return self._pending_to_sandbox(sandbox_id, pending)
-            raise
+        container = self._get_container_by_sandbox_id(sandbox_id)
         return self._container_to_sandbox(container, sandbox_id)
 
     def delete_sandbox(self, sandbox_id: str) -> None:

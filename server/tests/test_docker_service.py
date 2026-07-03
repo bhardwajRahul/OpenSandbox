@@ -51,7 +51,7 @@ from opensandbox_server.services.constants import (
     SANDBOX_SNAPSHOT_ID_LABEL,
     SandboxErrorCodes,
 )
-from opensandbox_server.services.docker import DockerSandboxService, PendingSandbox
+from opensandbox_server.services.docker import DockerSandboxService
 from opensandbox_server.services.helpers import (
     parse_gpu_request,
     parse_memory_limit,
@@ -65,13 +65,10 @@ from opensandbox_server.api.schema import (
     Host,
     ImageSpec,
     NetworkPolicy,
-    ListSandboxesRequest,
     OSSFS,
     PlatformSpec,
     PVC,
     ResourceLimits,
-    Sandbox,
-    SandboxFilter,
     SandboxStatus,
     Volume,
 )
@@ -1432,35 +1429,6 @@ async def test_create_sandbox_response_includes_extensions(mock_docker):
     assert response.extensions == {"opensandbox.extensions.test-key": "test-value"}
 
 
-@patch("opensandbox_server.services.docker.docker_service.docker")
-def test_pending_sandbox_includes_extensions(mock_docker):
-    mock_client = MagicMock()
-    mock_client.containers.list.return_value = []
-    mock_docker.from_env.return_value = mock_client
-
-    service = DockerSandboxService(config=_app_config())
-    pending = PendingSandbox(
-        request=MagicMock(
-            metadata=None,
-            entrypoint=["python"],
-            image=ImageSpec(uri="python:3.11"),
-            platform=None,
-            snapshot_id=None,
-            extensions={
-                "opensandbox.extensions.pool-ref": "my-pool",
-                "access.renew.extend.seconds": "1800",
-            },
-        ),
-        created_at=datetime.now(timezone.utc),
-        expires_at=datetime.now(timezone.utc),
-        status=SandboxStatus(state="Pending"),
-    )
-
-    sandbox = service._pending_to_sandbox("sandbox-pending-ext", pending)
-
-    assert sandbox.extensions == {"opensandbox.extensions.pool-ref": "my-pool"}
-
-
 def test_build_labels_store_platform_constraints():
     service = DockerSandboxService(config=_app_config())
     request = CreateSandboxRequest(
@@ -1995,31 +1963,6 @@ def test_restore_existing_sandboxes_ignores_manual_cleanup_without_warning():
     mock_warning.assert_not_called()
 
 @patch("opensandbox_server.services.docker.docker_service.docker")
-def test_pending_snapshot_restore_reports_snapshot_id_without_image(mock_docker):
-    mock_client = MagicMock()
-    mock_client.containers.list.return_value = []
-    mock_docker.from_env.return_value = mock_client
-
-    service = DockerSandboxService(config=_app_config())
-    pending = PendingSandbox(
-        request=MagicMock(
-            metadata={"team": "platform"},
-            entrypoint=["tail", "-f", "/dev/null"],
-            image=ImageSpec(uri="opensandbox-snapshots:snap-001"),
-            platform=None,
-            snapshot_id="snap-001",
-        ),
-        created_at=datetime.now(timezone.utc),
-        expires_at=datetime.now(timezone.utc),
-        status=SandboxStatus(state="Pending"),
-    )
-
-    sandbox = service._pending_to_sandbox("sandbox-123", pending)
-
-    assert sandbox.snapshot_id == "snap-001"
-    assert sandbox.image is None
-
-@patch("opensandbox_server.services.docker.docker_service.docker")
 def test_container_snapshot_restore_reports_snapshot_id_without_image(mock_docker):
     mock_client = MagicMock()
     mock_client.containers.list.return_value = []
@@ -2189,139 +2132,6 @@ async def test_get_sandbox_returns_pending_state(mock_docker):
 
     assert response.status.state == "Running"
     assert response.entrypoint == ["python", "app.py"]
-
-@patch("opensandbox_server.services.docker.docker_service.docker")
-def test_list_sandboxes_deduplicates_container_and_pending(mock_docker):
-    # Build a realistic container mock to avoid parse_timestamp errors.
-    container = MagicMock()
-    container.attrs = {
-        "Config": {"Labels": {SANDBOX_ID_LABEL: "sandbox-123"}},
-        "Created": "2025-01-01T00:00:00Z",
-        "State": {
-            "Status": "running",
-            "Running": True,
-            "FinishedAt": "0001-01-01T00:00:00Z",
-            "ExitCode": 0,
-        },
-    }
-    container.image = MagicMock(tags=["image:latest"], short_id="sha-image")
-
-    mock_client = MagicMock()
-    mock_client.containers.list.return_value = [container]
-    mock_docker.from_env.return_value = mock_client
-
-    service = DockerSandboxService(config=_app_config())
-    sandbox_id = "sandbox-123"
-
-    # Prepare container and pending representations
-    container_sandbox = Sandbox(
-        id=sandbox_id,
-        image=ImageSpec(uri="image:latest"),
-        status=SandboxStatus(
-            state="Running",
-            reason="CONTAINER_RUNNING",
-            message="running",
-            last_transition_at=datetime.now(timezone.utc),
-        ),
-        metadata={"team": "c"},
-        entrypoint=["/bin/sh"],
-        expiresAt=datetime.now(timezone.utc),
-        createdAt=datetime.now(timezone.utc),
-    )
-    # Force container state to be returned
-    service._container_to_sandbox = MagicMock(return_value=container_sandbox)
-
-    response = service.list_sandboxes(ListSandboxesRequest(filter=SandboxFilter(), pagination=None))
-
-    assert len(response.items) == 1
-    assert response.items[0].status.state == "Running"
-    assert response.items[0].metadata == {"team": "c"}
-
-@patch("opensandbox_server.services.docker.docker_service.docker")
-def test_get_sandbox_prefers_container_over_pending(mock_docker):
-    mock_client = MagicMock()
-    mock_client.containers.list.return_value = []
-    mock_docker.from_env.return_value = mock_client
-
-    service = DockerSandboxService(config=_app_config())
-    sandbox_id = "sandbox-abc"
-
-    pending_status = SandboxStatus(
-        state="Pending",
-        reason="SANDBOX_SCHEDULED",
-        message="pending",
-        last_transition_at=datetime.now(timezone.utc),
-    )
-    service._pending_sandboxes[sandbox_id] = PendingSandbox(
-        request=MagicMock(metadata={}, entrypoint=["/bin/sh"], image=ImageSpec(uri="image:latest")),
-        created_at=datetime.now(timezone.utc),
-        expires_at=datetime.now(timezone.utc),
-        status=pending_status,
-    )
-
-    container_sandbox = Sandbox(
-        id=sandbox_id,
-        image=ImageSpec(uri="image:latest"),
-        status=SandboxStatus(
-            state="Running",
-            reason="CONTAINER_RUNNING",
-            message="running",
-            last_transition_at=datetime.now(timezone.utc),
-        ),
-        metadata={},
-        entrypoint=["/bin/sh"],
-        expiresAt=datetime.now(timezone.utc),
-        createdAt=datetime.now(timezone.utc),
-    )
-
-    service._get_container_by_sandbox_id = MagicMock(return_value=MagicMock())
-    service._container_to_sandbox = MagicMock(return_value=container_sandbox)
-
-    sandbox = service.get_sandbox(sandbox_id)
-    assert sandbox.status.state == "Running"
-    assert sandbox.entrypoint == ["/bin/sh"]
-
-@patch("opensandbox_server.services.docker.docker_service.docker")
-def test_async_worker_cleans_up_leftover_container_on_failure(mock_docker):
-    mock_client = MagicMock()
-    mock_client.containers.list.return_value = []
-    mock_docker.from_env.return_value = mock_client
-
-    service = DockerSandboxService(config=_app_config())
-    sandbox_id = "sandbox-fail"
-    created_at = datetime.now(timezone.utc)
-    expires_at = created_at
-
-    pending_status = SandboxStatus(
-        state="Pending",
-        reason="SANDBOX_SCHEDULED",
-        message="pending",
-        last_transition_at=created_at,
-    )
-    service._pending_sandboxes[sandbox_id] = PendingSandbox(
-        request=MagicMock(metadata={}, entrypoint=["/bin/sh"], image=ImageSpec(uri="image:latest")),
-        created_at=created_at,
-        expires_at=expires_at,
-        status=pending_status,
-    )
-
-    service._provision_sandbox = MagicMock(
-        side_effect=HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"message": "boom"},
-        )
-    )
-    service._cleanup_failed_containers = MagicMock()
-
-    service._async_provision_worker(
-        sandbox_id,
-        MagicMock(),
-        created_at,
-        expires_at,
-    )
-
-    service._cleanup_failed_containers.assert_called_once_with(sandbox_id)
-    assert service._pending_sandboxes[sandbox_id].status.state == "Failed"
 
 @patch("opensandbox_server.services.docker.docker_service.docker")
 class TestBuildVolumeBinds:

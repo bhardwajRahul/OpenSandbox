@@ -204,19 +204,16 @@ paths:
       responses:
         '202':
           description: |
-            Sandbox created and accepted for provisioning.
+            Sandbox created and provisioned successfully.
 
             The returned sandbox includes:
             - `id`: Unique sandbox identifier
-            - `status.state: "Pending"` (auto-starting provisioning or restore)
-            - `status.reason` and `status.message` indicating initialization stage
+            - `status.state: "Running"` (provisioning completed synchronously)
+            - `status.reason` and `status.message` indicating current state
             - `metadata`, `expiresAt`, `createdAt`: Core sandbox information
 
             Note: startup source details and `updatedAt` are not included in the create response.
             Use GET /sandboxes/{sandboxId} to retrieve the complete sandbox information.
-
-            To track provisioning progress, poll GET /sandboxes/{sandboxId}.
-            The sandbox will automatically transition to `Running` state once provisioning or restore completes.
           content:
             application/json:
               schema:
