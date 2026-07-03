@@ -111,6 +111,18 @@ func registerIngressMetrics() error {
 			return nil
 		}),
 	)
+	if err != nil {
+		return err
+	}
+
+	_, err = meter.Int64ObservableGauge(
+		"ingress.connections.active",
+		metric.WithDescription("Current active network connections (TCP ESTABLISHED)"),
+		metric.WithInt64Callback(func(_ context.Context, obs metric.Int64Observer) error {
+			obs.Observe(activeNetworkConnections())
+			return nil
+		}),
+	)
 	return err
 }
 

@@ -19,3 +19,5 @@ package telemetry
 func systemMemoryUsedBytes() int64 { return 0 }
 
 func cpuUtilizationRatio() float64 { return 0 }
+
+func activeNetworkConnections() int64 { return 0 }

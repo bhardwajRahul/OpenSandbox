@@ -19,6 +19,7 @@ package telemetry
 import (
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/mem"
+	"github.com/shirou/gopsutil/net"
 )
 
 func systemMemoryUsedBytes() int64 {
@@ -35,4 +36,18 @@ func cpuUtilizationRatio() float64 {
 		return 0
 	}
 	return usage[0] / 100.0
+}
+
+func activeNetworkConnections() int64 {
+	conns, err := net.Connections("tcp")
+	if err != nil {
+		return 0
+	}
+	var count int64
+	for _, c := range conns {
+		if c.Status == "ESTABLISHED" {
+			count++
+		}
+	}
+	return count
 }
