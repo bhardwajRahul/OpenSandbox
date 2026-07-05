@@ -15,11 +15,20 @@
 package credentialvault
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
 	"github.com/stretchr/testify/require"
 )
+
+func mustMarshal(v any) json.RawMessage {
+	data, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return data
+}
 
 func testCredentialPolicy(t *testing.T, raw string) *policy.NetworkPolicy {
 	t.Helper()
@@ -32,11 +41,8 @@ func testCredentialVaultRequest() CreateRequest {
 	return CreateRequest{
 		Credentials: []Credential{
 			{
-				Name: "gitlab-token",
-				Source: InlineCredentialSource{
-					Type:  "inline",
-					Value: "secret-token",
-				},
+				Name:   "gitlab-token",
+				Source: mustMarshal(map[string]string{"type": "inline", "value": "secret-token"}),
 			},
 		},
 		Bindings: []Binding{

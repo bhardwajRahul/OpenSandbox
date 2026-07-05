@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -43,11 +44,8 @@ func testCredentialVaultRequest() credentialvault.CreateRequest {
 	return credentialvault.CreateRequest{
 		Credentials: []credentialvault.Credential{
 			{
-				Name: "gitlab-token",
-				Source: credentialvault.InlineCredentialSource{
-					Type:  "inline",
-					Value: "secret-token",
-				},
+				Name:   "gitlab-token",
+				Source: json.RawMessage(`{"type":"inline","value":"secret-token"}`),
 			},
 		},
 		Bindings: []credentialvault.Binding{

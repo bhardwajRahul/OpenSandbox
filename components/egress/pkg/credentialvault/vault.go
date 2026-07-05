@@ -72,12 +72,13 @@ type Store struct {
 	interceptPorts map[int]struct{}
 	mitmGate       *mitmproxy.HealthGate
 	requireToken   func() bool
+	sources        *SourceRegistry
 }
 
 type record struct {
 	Name       string
 	SourceType string
-	Value      string
+	Source     CredentialSource
 	Revision   int64
 }
 
@@ -105,13 +106,8 @@ type BindingMutationSet struct {
 }
 
 type Credential struct {
-	Name   string                 `json:"name"`
-	Source InlineCredentialSource `json:"source"`
-}
-
-type InlineCredentialSource struct {
-	Type  string `json:"type"`
-	Value string `json:"value"`
+	Name   string          `json:"name"`
+	Source json.RawMessage `json:"source"`
 }
 
 type Binding struct {
@@ -192,12 +188,22 @@ type InjectionHeader struct {
 }
 
 func NewStore(mitmGate *mitmproxy.HealthGate, requireToken func() bool) *Store {
+	return NewStoreWithRegistry(mitmGate, requireToken, nil)
+}
+
+// NewStoreWithRegistry creates a Store with a custom SourceRegistry. If
+// registry is nil, the default registry (with inline pre-registered) is used.
+func NewStoreWithRegistry(mitmGate *mitmproxy.HealthGate, requireToken func() bool, registry *SourceRegistry) *Store {
+	if registry == nil {
+		registry = NewSourceRegistry()
+	}
 	return &Store{
 		credentials:    make(map[string]record),
 		bindings:       make(map[string]Binding),
 		interceptPorts: map[int]struct{}{80: {}, 443: {}},
 		mitmGate:       mitmGate,
 		requireToken:   requireToken,
+		sources:        registry,
 	}
 }
 
@@ -211,7 +217,7 @@ func (v *Store) Create(req CreateRequest, pol *policy.NetworkPolicy) (State, err
 	credentials := make(map[string]record, len(req.Credentials))
 	bindings := make(map[string]Binding, len(req.Bindings))
 	for _, c := range req.Credentials {
-		rec, err := normalizeCredential(c, 1)
+		rec, err := v.normalizeCredential(c, 1)
 		if err != nil {
 			return State{}, err
 		}
@@ -255,7 +261,7 @@ func (v *Store) Patch(req MutationRequest, pol *policy.NetworkPolicy) (State, er
 	credentials := cloneCredentialRecords(v.credentials)
 	bindings := cloneCredentialBindings(v.bindings)
 
-	if err := applyCredentialMutations(credentials, req.Credentials, nextRevision); err != nil {
+	if err := v.applyCredentialMutations(credentials, req.Credentials, nextRevision); err != nil {
 		return State{}, err
 	}
 	if err := applyBindingMutations(bindings, req.Bindings); err != nil {
@@ -320,6 +326,10 @@ func (v *Store) sanitizedLocked() State {
 }
 
 func (v *Store) ActiveSnapshot() (ActiveSnapshot, error) {
+	return v.ActiveSnapshotWithContext(context.Background())
+}
+
+func (v *Store) ActiveSnapshotWithContext(ctx context.Context) (ActiveSnapshot, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	if !v.exists {
@@ -337,7 +347,7 @@ func (v *Store) ActiveSnapshot() (ActiveSnapshot, error) {
 	sort.Strings(names)
 	for _, name := range names {
 		b := v.bindings[name]
-		headers, values, err := renderInjectionHeaders(b.Auth, v.credentials)
+		headers, values, err := renderInjectionHeaders(ctx, b.Auth, v.credentials)
 		if err != nil {
 			return ActiveSnapshot{}, err
 		}
@@ -425,22 +435,16 @@ func (v *Store) validateBindingPolicy(b Binding, pol *policy.NetworkPolicy) erro
 	return nil
 }
 
-func normalizeCredential(c Credential, revision int64) (record, error) {
+func (v *Store) normalizeCredential(c Credential, revision int64) (record, error) {
 	name := strings.TrimSpace(c.Name)
 	if name == "" {
 		return record{}, fmt.Errorf("credential name cannot be blank")
 	}
-	sourceType := strings.TrimSpace(c.Source.Type)
-	if sourceType == "" {
-		sourceType = "inline"
+	source, err := v.sources.Create(c.Source)
+	if err != nil {
+		return record{}, fmt.Errorf("credential %q: %w", name, err)
 	}
-	if sourceType != "inline" {
-		return record{}, fmt.Errorf("unsupported credential source type %q", sourceType)
-	}
-	if c.Source.Value == "" {
-		return record{}, fmt.Errorf("credential %q inline value cannot be empty", name)
-	}
-	return record{Name: name, SourceType: sourceType, Value: c.Source.Value, Revision: revision}, nil
+	return record{Name: name, SourceType: source.Type(), Source: source, Revision: revision}, nil
 }
 
 func normalizeBinding(b Binding) (Binding, error) {
@@ -589,13 +593,13 @@ func credentialRefsForAuth(auth Auth) []string {
 	return []string{auth.Credential}
 }
 
-func renderInjectionHeaders(auth Auth, credentials map[string]record) ([]InjectionHeader, []string, error) {
+func renderInjectionHeaders(ctx context.Context, auth Auth, credentials map[string]record) ([]InjectionHeader, []string, error) {
 	valueFor := func(name string) (string, error) {
 		c, ok := credentials[name]
 		if !ok {
 			return "", fmt.Errorf("unknown credential %q", name)
 		}
-		return c.Value, nil
+		return c.Source.Resolve(ctx)
 	}
 	var headers []InjectionHeader
 	var redactions []string
@@ -647,7 +651,7 @@ func sanitizeAuth(auth Auth) AuthMetadata {
 	return meta
 }
 
-func applyCredentialMutations(credentials map[string]record, mutations *CredentialMutationSet, revision int64) error {
+func (v *Store) applyCredentialMutations(credentials map[string]record, mutations *CredentialMutationSet, revision int64) error {
 	if mutations == nil {
 		return nil
 	}
@@ -667,7 +671,7 @@ func applyCredentialMutations(credentials map[string]record, mutations *Credenti
 		delete(credentials, name)
 	}
 	for _, raw := range mutations.Replace {
-		rec, err := normalizeCredential(raw, revision)
+		rec, err := v.normalizeCredential(raw, revision)
 		if err != nil {
 			return err
 		}
@@ -682,7 +686,7 @@ func applyCredentialMutations(credentials map[string]record, mutations *Credenti
 	}
 	addSeen := make(map[string]struct{})
 	for _, raw := range mutations.Add {
-		rec, err := normalizeCredential(raw, revision)
+		rec, err := v.normalizeCredential(raw, revision)
 		if err != nil {
 			return err
 		}
