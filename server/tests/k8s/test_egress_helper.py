@@ -539,6 +539,27 @@ class TestSplitEgressEnv:
         assert sandbox_env == {"OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT": "true"}
         assert egress_env == {"OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT": "true"}
 
+    def test_allows_policy_file(self):
+        env = {"OPENSANDBOX_EGRESS_POLICY_FILE": "/var/egress/policy.json"}
+        sandbox_env, egress_env = split_egress_env(env)
+        assert sandbox_env == {}
+        assert egress_env == {"OPENSANDBOX_EGRESS_POLICY_FILE": "/var/egress/policy.json"}
+
+    def test_allows_policy_file_with_other_vars(self):
+        env = {
+            "OPENSANDBOX_EGRESS_POLICY_FILE": "/data/policy.json",
+            "OPENSANDBOX_EGRESS_LOG_LEVEL": "debug",
+            "APP_ENV": "production",
+        }
+        sandbox_env, egress_env = split_egress_env(env)
+        assert egress_env == {
+            "OPENSANDBOX_EGRESS_POLICY_FILE": "/data/policy.json",
+            "OPENSANDBOX_EGRESS_LOG_LEVEL": "debug",
+        }
+        assert sandbox_env == {
+            "APP_ENV": "production",
+        }
+
     def test_allows_all_permitted_vars(self):
         from opensandbox_server.services.constants import ALLOWED_EGRESS_ENV_VARS
         env = {key: "val" for key in ALLOWED_EGRESS_ENV_VARS}
