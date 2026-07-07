@@ -315,7 +315,7 @@ class InMemoryPoolStateStoreTest {
         val inMemoryStore = store as InMemoryPoolStateStore
         inMemoryStore.putIdle(poolName, "id-1")
 
-        inMemoryStore.beginDestroy(poolName, "owner-1", Duration.ofMinutes(5))
+        inMemoryStore.beginDestroy(poolName, "owner-1")
 
         assertEquals(PoolDestroyState.DESTROYING, inMemoryStore.getDestroyState(poolName))
         assertThrows(PoolDestroyedException::class.java) {

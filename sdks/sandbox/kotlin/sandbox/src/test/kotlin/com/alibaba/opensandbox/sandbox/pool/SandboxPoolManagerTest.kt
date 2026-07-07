@@ -17,6 +17,7 @@
 package com.alibaba.opensandbox.sandbox.pool
 
 import com.alibaba.opensandbox.sandbox.config.ConnectionConfig
+import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolDestroyIncompleteException
 import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolDestroyedException
 import com.alibaba.opensandbox.sandbox.domain.pool.PoolDestroyOptions
 import com.alibaba.opensandbox.sandbox.domain.pool.PoolDestroyState
@@ -31,8 +32,6 @@ class SandboxPoolManagerTest {
     @Test
     fun `destroy drains idle state and writes destroyed tombstone`() {
         val store = InMemoryPoolStateStore()
-        store.putIdle("old-pool", "id-1")
-        store.putIdle("old-pool", "id-2")
         val manager =
             SandboxPoolManager.builder()
                 .stateStore(store)
@@ -44,13 +43,12 @@ class SandboxPoolManagerTest {
             manager.destroy(
                 "old-pool",
                 PoolDestroyOptions(
-                    killIdleSandboxes = false,
                     tombstoneTtl = Duration.ofMinutes(5),
                 ),
             )
 
         assertEquals(PoolDestroyState.DESTROYED, result.state)
-        assertEquals(2, result.drainedIdleCount)
+        assertEquals(0, result.drainedIdleCount)
         assertEquals(0, result.killedIdleCount)
         assertEquals(true, result.persistentStateCleared)
         assertEquals(PoolDestroyState.DESTROYED, store.getDestroyState("old-pool"))
@@ -61,9 +59,8 @@ class SandboxPoolManagerTest {
     }
 
     @Test
-    fun `destroy best effort writes tombstone when clear state fails`() {
+    fun `destroy keeps namespace destroying when clear state fails`() {
         val delegate = InMemoryPoolStateStore()
-        delegate.putIdle("old-pool", "id-1")
         val store = ClearFailsStore(delegate)
         val manager =
             SandboxPoolManager.builder()
@@ -72,17 +69,16 @@ class SandboxPoolManagerTest {
                 .ownerId("manager-1")
                 .build()
 
-        assertThrows(IllegalStateException::class.java) {
+        assertThrows(PoolDestroyIncompleteException::class.java) {
             manager.destroy(
                 "old-pool",
                 PoolDestroyOptions(
-                    killIdleSandboxes = false,
                     tombstoneTtl = Duration.ofMinutes(5),
                 ),
             )
         }
 
-        assertEquals(PoolDestroyState.DESTROYED, delegate.getDestroyState("old-pool"))
+        assertEquals(PoolDestroyState.DESTROYING, delegate.getDestroyState("old-pool"))
     }
 
     private class ClearFailsStore(

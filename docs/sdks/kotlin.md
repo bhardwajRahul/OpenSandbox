@@ -293,7 +293,7 @@ For distributed deployment, use the optional `com.alibaba.opensandbox:sandbox-po
 
 In distributed mode, `resize(maxIdle)` can be called from any node. The call returns after the target is stored in the shared state store; the current primary applies replenish or shrink work during periodic reconcile. Use `resize(0)` and wait for `snapshot().idleCount == 0` when you need to drain the distributed idle buffer; `releaseAllIdle()` is only a best-effort cleanup pass.
 
-`SandboxPoolManager.destroy(poolName)` is a stronger administrative operation: it writes a destroy fence, drains visible idle IDs, best-effort kills idle sandboxes, clears persistent pool state, and leaves a destroyed tombstone for the configured TTL to prevent old nodes from recreating the same pool namespace.
+`SandboxPoolManager.destroy(poolName)` is a stronger administrative operation: it writes a `DESTROYING` fence, drains visible idle IDs, best-effort kills idle sandboxes, clears persistent pool state, and then writes a `DESTROYED` tombstone for the configured TTL to prevent old nodes from recreating the same pool namespace. If drain or persistent-state cleanup cannot complete, `destroy()` throws `PoolDestroyIncompleteException` and leaves the namespace fenced as `DESTROYING`; retry `destroy()` to finish cleanup.
 :::
 
 ## Configuration

@@ -18,6 +18,7 @@ package com.alibaba.opensandbox.sandbox.pool
 
 import com.alibaba.opensandbox.sandbox.SandboxManager
 import com.alibaba.opensandbox.sandbox.config.ConnectionConfig
+import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolDestroyIncompleteException
 import com.alibaba.opensandbox.sandbox.domain.pool.PoolDestroyOptions
 import com.alibaba.opensandbox.sandbox.domain.pool.PoolDestroyResult
 import com.alibaba.opensandbox.sandbox.domain.pool.PoolDestroyState
@@ -49,7 +50,8 @@ class SandboxPoolManager
          * FORCE destroy writes a shared DESTROYING fence first. Running pool instances that
          * observe the fence must stop replenish/acquire paths instead of falling back to direct
          * create. The manager then drains visible idle IDs, best-effort kills them, clears
-         * persistent coordination state, and writes a DESTROYED tombstone.
+         * persistent coordination state, and writes a DESTROYED tombstone. If drain or cleanup
+         * cannot finish, the namespace remains DESTROYING and callers should retry destroy.
          */
         @JvmOverloads
         fun destroy(
@@ -61,29 +63,32 @@ class SandboxPoolManager
                 "Only FORCE destroy is supported in this version"
             }
 
+            if (stateStore.getDestroyState(poolName) == PoolDestroyState.DESTROYED) {
+                return PoolDestroyResult(
+                    poolName = poolName,
+                    state = PoolDestroyState.DESTROYED,
+                    drainedIdleCount = 0,
+                    killedIdleCount = 0,
+                    failedKillCount = 0,
+                    persistentStateCleared = false,
+                    tombstoneWritten = true,
+                )
+            }
+
             val manager =
-                if (options.killIdleSandboxes) {
-                    SandboxManager.builder()
-                        .connectionConfig(connectionConfig.copyWithoutConnectionPool())
-                        .build()
-                } else {
-                    null
-                }
+                SandboxManager.builder()
+                    .connectionConfig(connectionConfig.copyWithoutConnectionPool())
+                    .build()
 
             var drained = 0
             var killed = 0
             var failedKill = 0
-            var persistentStateCleared = false
-            var tombstoneWritten = false
-            var destroyStarted = false
             try {
-                stateStore.beginDestroy(poolName, ownerId, options.destroyLeaseTtl)
-                destroyStarted = true
+                stateStore.beginDestroy(poolName, ownerId)
                 val deadline = Instant.now().plus(options.drainTimeout)
                 while (true) {
                     val sandboxId = stateStore.tryTakeIdle(poolName) ?: break
                     drained++
-                    if (manager == null) continue
                     try {
                         manager.killSandbox(sandboxId)
                         killed++
@@ -97,47 +102,40 @@ class SandboxPoolManager
                         )
                     }
                     if (options.drainTimeout.toMillis() > 0 && Instant.now().isAfter(deadline)) {
-                        logger.warn(
-                            "Pool destroy drain timeout reached: pool_name={} drained={}",
-                            poolName,
-                            drained,
+                        throw PoolDestroyIncompleteException(
+                            "Pool destroy drain timeout reached: poolName=$poolName drainedIdleCount=$drained",
                         )
-                        break
                     }
                 }
-                if (options.clearPersistentState) {
-                    stateStore.clearPoolState(poolName)
-                    persistentStateCleared = true
-                }
-            } finally {
                 try {
-                    if (destroyStarted) {
-                        try {
-                            stateStore.markDestroyed(poolName, ownerId, options.tombstoneTtl)
-                            tombstoneWritten = true
-                        } catch (e: Exception) {
-                            logger.warn(
-                                "Pool destroy failed to write destroyed tombstone; DESTROYING lease remains: " +
-                                    "pool_name={} error={}",
-                                poolName,
-                                e.message,
-                            )
-                        }
-                    }
-                } finally {
-                    manager?.close()
+                    stateStore.clearPoolState(poolName)
+                } catch (e: Exception) {
+                    throw PoolDestroyIncompleteException(
+                        message = "Pool destroy failed to clear persistent state: poolName=$poolName",
+                        cause = e,
+                    )
                 }
-            }
+                try {
+                    stateStore.markDestroyed(poolName, ownerId, options.tombstoneTtl)
+                } catch (e: Exception) {
+                    throw PoolDestroyIncompleteException(
+                        message = "Pool destroy failed to write destroyed tombstone: poolName=$poolName",
+                        cause = e,
+                    )
+                }
 
-            return PoolDestroyResult(
-                poolName = poolName,
-                state = PoolDestroyState.DESTROYED,
-                drainedIdleCount = drained,
-                killedIdleCount = killed,
-                failedKillCount = failedKill,
-                persistentStateCleared = persistentStateCleared,
-                tombstoneWritten = tombstoneWritten,
-            )
+                return PoolDestroyResult(
+                    poolName = poolName,
+                    state = PoolDestroyState.DESTROYED,
+                    drainedIdleCount = drained,
+                    killedIdleCount = killed,
+                    failedKillCount = failedKill,
+                    persistentStateCleared = true,
+                    tombstoneWritten = true,
+                )
+            } finally {
+                manager.close()
+            }
         }
 
         companion object {

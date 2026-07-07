@@ -192,7 +192,6 @@ interface PoolStateStore {
     fun beginDestroy(
         poolName: String,
         ownerId: String,
-        ttl: Duration,
     ) {
         throw UnsupportedOperationException("Pool destroy is not supported by this PoolStateStore")
     }

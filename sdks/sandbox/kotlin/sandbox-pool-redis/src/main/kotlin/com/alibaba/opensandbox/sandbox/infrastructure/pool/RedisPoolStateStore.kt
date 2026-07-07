@@ -270,17 +270,14 @@ class RedisPoolStateStore(
     override fun beginDestroy(
         poolName: String,
         ownerId: String,
-        ttl: Duration,
     ) {
-        validateOwnerAndTtl(ownerId, ttl)
+        require(ownerId.isNotBlank()) { "ownerId must not be blank" }
         execute("beginDestroy", poolName) {
-            val ttlMillis = ttl.toMillis().coerceAtLeast(1)
-            redis.set(
-                destroyStateKey(poolName),
-                PoolDestroyState.DESTROYING.name,
-                SetParams.setParams().px(ttlMillis),
-            )
-            redis.set(destroyOwnerKey(poolName), ownerId, SetParams.setParams().px(ttlMillis))
+            if (redis.get(destroyStateKey(poolName)) == PoolDestroyState.DESTROYED.name) {
+                throw PoolDestroyedException("Pool namespace is already DESTROYED: poolName=$poolName")
+            }
+            redis.set(destroyStateKey(poolName), PoolDestroyState.DESTROYING.name)
+            redis.set(destroyOwnerKey(poolName), ownerId)
         }
     }
 

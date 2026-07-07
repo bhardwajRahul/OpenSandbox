@@ -42,16 +42,10 @@ class PoolDestroyOptions
     @JvmOverloads
     constructor(
         val strategy: PoolDestroyStrategy = PoolDestroyStrategy.FORCE,
-        val killIdleSandboxes: Boolean = true,
-        val clearPersistentState: Boolean = true,
-        val destroyLeaseTtl: Duration = Duration.ofMinutes(5),
         val tombstoneTtl: Duration? = Duration.ofDays(7),
         val drainTimeout: Duration = Duration.ofSeconds(30),
     ) {
         init {
-            require(!destroyLeaseTtl.isNegative && !destroyLeaseTtl.isZero) {
-                "destroyLeaseTtl must be positive"
-            }
             require(tombstoneTtl == null || (!tombstoneTtl.isNegative && !tombstoneTtl.isZero)) {
                 "tombstoneTtl must be positive when set"
             }

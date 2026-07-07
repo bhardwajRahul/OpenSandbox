@@ -190,6 +190,20 @@ class PoolDestroyedException(
     )
 
 /**
+ * Thrown when a pool destroy operation has started but did not complete. The pool namespace
+ * remains fenced in DESTROYING state so callers can retry destroy instead of silently resuming
+ * a partially-cleaned pool.
+ */
+class PoolDestroyIncompleteException(
+    message: String? = "Pool destroy did not complete",
+    cause: Throwable? = null,
+) : SandboxException(
+        message = message,
+        cause = cause,
+        error = SandboxError(SandboxError.POOL_DESTROY_INCOMPLETE, message),
+    )
+
+/**
  * Defines standardized common error codes and messages for the Sandbox SDK.
  */
 data class SandboxError(
@@ -223,5 +237,8 @@ data class SandboxError(
 
         /** Pool namespace is destroying or destroyed. */
         const val POOL_DESTROYED = "POOL_DESTROYED"
+
+        /** Pool destroy started but did not complete. */
+        const val POOL_DESTROY_INCOMPLETE = "POOL_DESTROY_INCOMPLETE"
     }
 }

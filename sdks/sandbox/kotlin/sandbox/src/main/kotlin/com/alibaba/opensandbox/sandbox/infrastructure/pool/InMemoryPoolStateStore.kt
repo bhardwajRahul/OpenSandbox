@@ -219,12 +219,13 @@ class InMemoryPoolStateStore : PoolStateStore {
     override fun beginDestroy(
         poolName: String,
         ownerId: String,
-        ttl: Duration,
     ) {
         require(ownerId.isNotBlank()) { "ownerId must not be blank" }
-        require(!ttl.isNegative && !ttl.isZero) { "ttl must be positive" }
-        destroyStateByPool[poolName] =
-            DestroyStateEntry(PoolDestroyState.DESTROYING, Instant.now().plus(ttl), ownerId)
+        val existing = getDestroyState(poolName)
+        if (existing == PoolDestroyState.DESTROYED) {
+            throw PoolDestroyedException("Pool namespace is already DESTROYED: poolName=$poolName")
+        }
+        destroyStateByPool[poolName] = DestroyStateEntry(PoolDestroyState.DESTROYING, null, ownerId)
     }
 
     override fun clearPoolState(poolName: String) {
