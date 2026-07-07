@@ -575,11 +575,9 @@ public class SandboxPoolSingleNodeE2ETest extends BaseE2ETest {
         PoolDestroyResult result = poolManager.destroy(poolName, new PoolDestroyOptions());
 
         assertEquals(PoolDestroyState.DESTROYED, result.getState());
-        assertTrue(result.getTombstoneWritten(), "destroy should write a destroyed tombstone");
         assertTrue(result.getPersistentStateCleared(), "destroy should clear persistent pool state");
         assertTrue(result.getDrainedIdleCount() >= 1, "destroy should drain warmed idle ids");
         assertEquals(result.getDrainedIdleCount(), result.getKilledIdleCount());
-        assertEquals(0, result.getFailedKillCount());
         assertEquals(PoolDestroyState.DESTROYED, stateStore.getDestroyState(poolName));
         assertEquals(0, stateStore.snapshotCounters(poolName).getIdleCount());
 

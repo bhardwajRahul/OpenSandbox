@@ -61,7 +61,5 @@ class PoolDestroyResult(
     val state: PoolDestroyState,
     val drainedIdleCount: Int,
     val killedIdleCount: Int,
-    val failedKillCount: Int,
     val persistentStateCleared: Boolean,
-    val tombstoneWritten: Boolean,
 )

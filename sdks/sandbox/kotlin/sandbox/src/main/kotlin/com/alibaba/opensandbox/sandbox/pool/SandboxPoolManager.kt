@@ -69,9 +69,7 @@ class SandboxPoolManager
                     state = PoolDestroyState.DESTROYED,
                     drainedIdleCount = 0,
                     killedIdleCount = 0,
-                    failedKillCount = 0,
                     persistentStateCleared = false,
-                    tombstoneWritten = true,
                 )
             }
 
@@ -82,7 +80,6 @@ class SandboxPoolManager
 
             var drained = 0
             var killed = 0
-            var failedKill = 0
             try {
                 stateStore.beginDestroy(poolName, ownerId)
                 val deadline = Instant.now().plus(options.drainTimeout)
@@ -93,7 +90,6 @@ class SandboxPoolManager
                         manager.killSandbox(sandboxId)
                         killed++
                     } catch (e: Exception) {
-                        failedKill++
                         logger.warn(
                             "Pool destroy failed to kill idle sandbox (best-effort): pool_name={} sandbox_id={} error={}",
                             poolName,
@@ -129,9 +125,7 @@ class SandboxPoolManager
                     state = PoolDestroyState.DESTROYED,
                     drainedIdleCount = drained,
                     killedIdleCount = killed,
-                    failedKillCount = failedKill,
                     persistentStateCleared = true,
-                    tombstoneWritten = true,
                 )
             } finally {
                 manager.close()
