@@ -148,9 +148,9 @@ _jdk_import_ca() {
 		return 0
 	fi
 
-	# Idempotent: skip if alias already present.
+	# Remove stale alias first so a regenerated CA cert is always picked up.
 	if "$kt" -list -alias "$alias_name" -keystore "$ks" -storepass changeit >/dev/null 2>&1; then
-		return 0
+		_sudo "$kt" -delete -alias "$alias_name" -keystore "$ks" -storepass changeit >/dev/null 2>&1
 	fi
 
 	if _sudo "$kt" -importcert -noprompt -trustcacerts \
