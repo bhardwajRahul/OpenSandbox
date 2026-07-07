@@ -13,6 +13,7 @@ from opensandbox._pool_reconciler import ReconcileState
 from opensandbox.config import ConnectionConfig
 from opensandbox.exceptions import (
     PoolAcquireFailedException,
+    PoolDestroyedException,
     PoolEmptyException,
     PoolNotRunningException,
 )
@@ -101,6 +102,23 @@ async def test_async_acquire_direct_create_when_empty() -> None:
         fake_sandbox = cast(FakeAsyncSandbox, sandbox)
         assert sandbox.id == "created-1"
         assert fake_sandbox.renewed == [timedelta(minutes=5)]
+    finally:
+        await pool.shutdown(False)
+
+
+@pytest.mark.asyncio
+async def test_async_acquire_does_not_direct_create_when_pool_namespace_is_destroying() -> None:
+    FakeAsyncSandbox.reset()
+    store = InMemoryAsyncPoolStateStore()
+    pool = _create_pool(max_idle=0, store=store)
+    await pool.start()
+
+    try:
+        await store.begin_destroy("pool", "destroyer")
+
+        with pytest.raises(PoolDestroyedException):
+            await pool.acquire()
+        assert FakeAsyncSandbox.created_count == 0
     finally:
         await pool.shutdown(False)
 
