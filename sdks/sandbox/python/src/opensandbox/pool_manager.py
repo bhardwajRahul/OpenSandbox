@@ -92,7 +92,8 @@ class SandboxPoolManagerSync:
         manager = self._sandbox_manager_factory(self._connection_for_pool_resource())
         drained = 0
         killed = 0
-        deadline = time.monotonic() + options.drain_timeout.total_seconds()
+        drain_timeout_seconds = options.drain_timeout.total_seconds()
+        deadline = time.monotonic() + drain_timeout_seconds
         try:
             while True:
                 sandbox_id = self._state_store.try_take_idle(pool_name)
@@ -109,7 +110,7 @@ class SandboxPoolManagerSync:
                         sandbox_id,
                         exc,
                     )
-                if time.monotonic() > deadline:
+                if drain_timeout_seconds > 0 and time.monotonic() > deadline:
                     raise PoolDestroyIncompleteException(
                         f"Pool destroy drain timed out: pool_name={pool_name}"
                     )
@@ -201,7 +202,8 @@ class SandboxPoolManagerAsync:
         manager = await self._sandbox_manager_factory(self._connection_for_pool_resource())
         drained = 0
         killed = 0
-        deadline = asyncio.get_running_loop().time() + options.drain_timeout.total_seconds()
+        drain_timeout_seconds = options.drain_timeout.total_seconds()
+        deadline = asyncio.get_running_loop().time() + drain_timeout_seconds
         try:
             while True:
                 sandbox_id = await self._state_store.try_take_idle(pool_name)
@@ -218,7 +220,10 @@ class SandboxPoolManagerAsync:
                         sandbox_id,
                         exc,
                     )
-                if asyncio.get_running_loop().time() > deadline:
+                if (
+                    drain_timeout_seconds > 0
+                    and asyncio.get_running_loop().time() > deadline
+                ):
                     raise PoolDestroyIncompleteException(
                         f"Pool destroy drain timed out: pool_name={pool_name}"
                     )

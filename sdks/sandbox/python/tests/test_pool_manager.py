@@ -63,6 +63,26 @@ def test_pool_manager_destroy_failure_leaves_destroying_for_retry() -> None:
     assert store.get_destroy_state("pool") == PoolDestroyState.DESTROYING
 
 
+def test_pool_manager_zero_drain_timeout_means_no_timeout() -> None:
+    store = InMemoryPoolStateStore()
+    store.put_idle("pool", "id-1")
+    manager = _RecordingManager()
+    pool_manager = SandboxPoolManagerSync(
+        state_store=store,
+        owner_id="destroyer",
+        sandbox_manager_factory=lambda config: manager,  # type: ignore[arg-type,return-value]
+    )
+
+    result = pool_manager.destroy(
+        "pool",
+        PoolDestroyOptions(drain_timeout=timedelta(0)),
+    )
+
+    assert result.state == PoolDestroyState.DESTROYED
+    assert result.drained_idle_count == 1
+    assert manager.killed == ["id-1"]
+
+
 @pytest.mark.asyncio
 async def test_async_pool_manager_destroy_drains_idle_clears_state_and_writes_tombstone() -> None:
     store = InMemoryAsyncPoolStateStore()
