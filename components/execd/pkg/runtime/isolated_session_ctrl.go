@@ -111,7 +111,7 @@ func (r *IsolatedRunner) CollectIdle() {
 		if s.dead() {
 			log.Info("idle GC: cleaning up dead session %s", sessionID)
 			if err := r.DeleteIsolatedSession(sessionID); err != nil {
-				log.Warning("idle GC: delete dead session %s: %v", sessionID, err)
+				log.Warn("idle GC: delete dead session %s: %v", sessionID, err)
 			}
 			return true
 		}
@@ -128,7 +128,7 @@ func (r *IsolatedRunner) CollectIdle() {
 			s.runMu.Unlock()
 			log.Info("idle GC: deleting session %s (idle %v > timeout %v)", sessionID, idle, timeout)
 			if err := r.DeleteIsolatedSession(sessionID); err != nil {
-				log.Warning("idle GC: delete session %s: %v", sessionID, err)
+				log.Warn("idle GC: delete session %s: %v", sessionID, err)
 			}
 		}
 		return true
@@ -378,12 +378,12 @@ func (r *IsolatedRunner) DeleteIsolatedSession(id string) error {
 	defer s.mu.Unlock()
 
 	if err := s.stop(); err != nil {
-		log.Warning("stop isolated session %s: %v", id, err)
+		log.Warn("stop isolated session %s: %v", id, err)
 	}
 
 	if s.upperID != "" {
 		if err := r.upperMgr.Remove(s.upperID); err != nil {
-			log.Warning("remove upper dir for session %s: %v", id, err)
+			log.Warn("remove upper dir for session %s: %v", id, err)
 		}
 	}
 
