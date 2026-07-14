@@ -177,10 +177,13 @@ func (c *IsolatedSessionController) Get() {
 			Keys: state.EnvPassthroughKeys,
 		}
 	}
-	if state.IdleTimeoutSeconds > 0 {
-		v := state.IdleTimeoutSeconds
-		resp.IdleTimeoutSeconds = &v
-	}
+	// Echo idle_timeout_seconds unconditionally. A value of 0 is meaningful:
+	// it means the session was created with idle GC disabled — the exact
+	// configuration a stateless caller doing long-window recovery needs to
+	// see. Older execd builds that don't set this field are distinguished
+	// by the pointer being nil.
+	idle := state.IdleTimeoutSeconds
+	resp.IdleTimeoutSeconds = &idle
 	c.RespondSuccess(resp)
 }
 

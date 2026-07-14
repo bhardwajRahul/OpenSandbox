@@ -25,7 +25,10 @@ import httpx
 from opensandbox.adapters.converter.event_node import EventNode
 from opensandbox.adapters.converter.exception_converter import ExceptionConverter
 from opensandbox.adapters.converter.response_handler import extract_request_id
-from opensandbox.adapters.isolated_adapter import _build_attach_info
+from opensandbox.adapters.isolated_adapter import (
+    _build_attach_info,
+    _build_session_state,
+)
 from opensandbox.config.connection_sync import ConnectionConfigSync
 from opensandbox.exceptions import InvalidArgumentException, SandboxApiException
 from opensandbox.models.execd import Execution
@@ -235,7 +238,7 @@ class IsolatedSessionsAdapterSync(IsolationServiceSyncMixin, IsolationServiceSyn
                     status_code=response.status_code,
                     request_id=extract_request_id(response.headers),
                 )
-            return IsolatedSessionState(**response.json())
+            return _build_session_state(response.json())
         except Exception as e:
             raise ExceptionConverter.to_sandbox_exception(e) from e
 

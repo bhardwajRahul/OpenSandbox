@@ -145,3 +145,37 @@ func TestSessionState_JSONRoundtrip(t *testing.T) {
 		t.Errorf("IdleTimeoutSeconds lost in round-trip")
 	}
 }
+
+// TestSessionState_IdleTimeoutZeroIsMeaningful ensures a session created
+// with idle_timeout_seconds explicitly set to 0 (idle GC disabled — the
+// long-window recovery configuration) is echoed back as a present-but-zero
+// value, not omitted. Older execd builds that don't emit the field are
+// distinguished by pointer nil.
+func TestSessionState_IdleTimeoutZeroIsMeaningful(t *testing.T) {
+	zero := 0
+	state := SessionState{
+		Status:             "active",
+		IdleTimeoutSeconds: &zero,
+	}
+
+	b, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	// Present, with value 0 — NOT omitted.
+	if !strings.Contains(s, `"idle_timeout_seconds":0`) {
+		t.Errorf("expected idle_timeout_seconds:0 in JSON, got: %s", s)
+	}
+
+	var back SessionState
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.IdleTimeoutSeconds == nil {
+		t.Fatal("IdleTimeoutSeconds should be non-nil (explicit 0)")
+	}
+	if *back.IdleTimeoutSeconds != 0 {
+		t.Errorf("IdleTimeoutSeconds = %d, want 0", *back.IdleTimeoutSeconds)
+	}
+}

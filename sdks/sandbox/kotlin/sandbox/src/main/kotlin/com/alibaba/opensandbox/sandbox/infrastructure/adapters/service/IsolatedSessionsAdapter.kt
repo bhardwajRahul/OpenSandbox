@@ -279,6 +279,26 @@ internal class IsolatedSessionsAdapter(
                     createdAt = resp.created_at?.let { parseDateTime(it) },
                     lastRunAt = resp.last_run_at?.let { parseDateTime(it) },
                     idleRemainingSeconds = resp.idle_remaining_seconds,
+                    profile = resp.profile,
+                    workspace =
+                        resp.workspace?.let {
+                            IsolatedWorkspaceSpec(path = it.path, mode = it.mode)
+                        },
+                    extraWritable = resp.extra_writable,
+                    binds =
+                        resp.binds?.map { BindMount(it.source, it.dest, it.readonly) },
+                    shareNet = resp.share_net,
+                    envPassthrough =
+                        resp.env_passthrough?.let {
+                            EnvPassthroughSpec(
+                                mode = it.mode ?: "deny",
+                                keys = it.keys ?: emptyList(),
+                            )
+                        },
+                    uid = resp.uid,
+                    gid = resp.gid,
+                    uidMode = resp.uid_mode,
+                    idleTimeoutSeconds = resp.idle_timeout_seconds,
                 )
             }
         } catch (e: Exception) {

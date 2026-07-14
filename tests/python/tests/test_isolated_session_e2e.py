@@ -242,10 +242,15 @@ class TestIsolatedSessionE2E:
             await attached.delete()
         except Exception:
             # If attach failed before delete, clean up via the original handle.
+            # Best-effort: swallow cleanup errors so the original exception
+            # surfaces, but log them for debuggability.
             try:
                 await created.delete()
-            except Exception:
-                pass
+            except Exception as cleanup_exc:
+                logger.warning(
+                    "attach roundtrip cleanup: failed to delete session %s: %s",
+                    session_id, cleanup_exc,
+                )
             raise
 
     async def test_attach_nonexistent_session_raises(self):

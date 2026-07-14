@@ -173,7 +173,15 @@ class IsolatedSessionInfo(BaseModel):
 
 
 class IsolatedSessionState(BaseModel):
-    """Current state of an isolated session."""
+    """Current state of an isolated session.
+
+    In addition to the required ``status`` field and the runtime timestamps,
+    execd may echo back the creation-parameter fields used when the session was
+    created. Older execd builds omit them; when absent the fields default to
+    ``None``. This mirrors the extended shape of :class:`IsolatedSessionInfo`
+    so callers using :meth:`IsolationSession.get` can observe the same
+    configuration they would have seen via :meth:`IsolationService.attach`.
+    """
 
     status: str = Field(description="Session status: 'active' or 'destroyed'")
     created_at: datetime | None = Field(
@@ -184,6 +192,46 @@ class IsolatedSessionState(BaseModel):
     )
     idle_remaining_seconds: int | None = Field(
         default=None, description="Seconds until idle auto-destroy (null if no timeout)"
+    )
+    profile: str | None = Field(
+        default=None,
+        description="Isolation profile the session was created with ('strict' or 'balanced').",
+    )
+    workspace: IsolatedWorkspaceSpec | None = Field(
+        default=None,
+        description="Workspace bind configuration used at session creation.",
+    )
+    extra_writable: list[str] | None = Field(
+        default=None,
+        description="Additional paths bound read-write inside the namespace.",
+    )
+    binds: list[BindMount] | None = Field(
+        default=None,
+        description="Additional host paths bind-mounted into the namespace.",
+    )
+    share_net: bool | None = Field(
+        default=None,
+        description="Whether the session shares the host network namespace.",
+    )
+    env_passthrough: EnvPassthroughSpec | None = Field(
+        default=None,
+        description="Environment variable passthrough configuration.",
+    )
+    uid: int | None = Field(
+        default=None,
+        description="Unix UID the session runs as inside the namespace.",
+    )
+    gid: int | None = Field(
+        default=None,
+        description="Unix GID the session runs as inside the namespace.",
+    )
+    uid_mode: str | None = Field(
+        default=None,
+        description="How user identity is established inside the namespace ('setpriv' or 'userns').",
+    )
+    idle_timeout_seconds: int | None = Field(
+        default=None,
+        description="Idle timeout in seconds (0 = no timeout).",
     )
 
     model_config = ConfigDict(populate_by_name=True)

@@ -288,6 +288,124 @@ class IsolatedSessionsAdapterTest {
     }
 
     @Test
+    fun `getInternal populatesFullState whenExecdReturnsAllFields`() {
+        mockWebServer.enqueue(
+            MockResponse()
+                .setBody(
+                    """
+                    {
+                      "status": "active",
+                      "created_at": "2026-01-02T03:04:05Z",
+                      "last_run_at": "2026-01-02T03:05:06Z",
+                      "idle_remaining_seconds": 30,
+                      "profile": "strict",
+                      "workspace": {"path": "/workspace", "mode": "rw"},
+                      "extra_writable": ["/tmp", "/var/tmp"],
+                      "binds": [
+                        {"source": "/host/a", "dest": "/sbx/a", "readonly": true}
+                      ],
+                      "share_net": false,
+                      "env_passthrough": {"mode": "allow", "keys": ["PATH", "HOME"]},
+                      "uid": 1000,
+                      "gid": 2000,
+                      "uid_mode": "userns",
+                      "idle_timeout_seconds": 300
+                    }
+                    """.trimIndent(),
+                ),
+        )
+
+        val state = adapter.getInternal("sess-full")
+
+        val request = mockWebServer.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/v1/isolated/session/sess-full", request.path)
+        assertEquals("route-token", request.getHeader("X-Execd-Token"))
+
+        assertEquals("active", state.status)
+        assertEquals(2026, state.createdAt?.year)
+        assertEquals(5, state.lastRunAt?.minute)
+        assertEquals(30, state.idleRemainingSeconds)
+        assertEquals("strict", state.profile)
+        assertEquals("/workspace", state.workspace?.path)
+        assertEquals("rw", state.workspace?.mode)
+        assertEquals(listOf("/tmp", "/var/tmp"), state.extraWritable)
+        assertEquals(1, state.binds?.size)
+        assertEquals("/host/a", state.binds?.get(0)?.source)
+        assertEquals("/sbx/a", state.binds?.get(0)?.dest)
+        assertEquals(true, state.binds?.get(0)?.readonly)
+        assertEquals(false, state.shareNet)
+        assertEquals("allow", state.envPassthrough?.mode)
+        assertEquals(listOf("PATH", "HOME"), state.envPassthrough?.keys)
+        assertEquals(1000, state.uid)
+        assertEquals(2000, state.gid)
+        assertEquals("userns", state.uidMode)
+        assertEquals(300, state.idleTimeoutSeconds)
+    }
+
+    @Test
+    fun `getInternal toleratesMissingEchoFields whenExecdIsOlder`() {
+        mockWebServer.enqueue(
+            MockResponse()
+                .setBody(
+                    """
+                    {
+                      "status": "active",
+                      "created_at": "2026-01-02T03:04:05Z",
+                      "last_run_at": null,
+                      "idle_remaining_seconds": 7
+                    }
+                    """.trimIndent(),
+                ),
+        )
+
+        val state = adapter.getInternal("sess-old")
+
+        val request = mockWebServer.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/v1/isolated/session/sess-old", request.path)
+
+        assertEquals("active", state.status)
+        assertNotNull(state.createdAt)
+        assertNull(state.lastRunAt)
+        assertEquals(7, state.idleRemainingSeconds)
+        assertNull(state.profile)
+        assertNull(state.workspace)
+        assertNull(state.extraWritable)
+        assertNull(state.binds)
+        assertNull(state.shareNet)
+        assertNull(state.envPassthrough)
+        assertNull(state.uid)
+        assertNull(state.gid)
+        assertNull(state.uidMode)
+        assertNull(state.idleTimeoutSeconds)
+    }
+
+    @Test
+    fun `getInternal preservesIdleTimeoutZero`() {
+        // idle_timeout_seconds == 0 means "idle GC disabled" (long-window recovery),
+        // which is semantically distinct from null/absent. It must be preserved as 0,
+        // not coerced to null.
+        mockWebServer.enqueue(
+            MockResponse()
+                .setBody(
+                    """
+                    {
+                      "status": "active",
+                      "created_at": "2026-01-02T03:04:05Z",
+                      "idle_timeout_seconds": 0
+                    }
+                    """.trimIndent(),
+                ),
+        )
+
+        val state = adapter.getInternal("sess-zero")
+
+        assertEquals("active", state.status)
+        assertEquals(0, state.idleTimeoutSeconds)
+    }
+
+    @Test
     fun `attach propagatesNotFound whenSessionMissing`() {
         mockWebServer.enqueue(
             MockResponse()
