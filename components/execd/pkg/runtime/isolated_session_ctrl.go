@@ -682,7 +682,18 @@ func normalizeIsolatedOptions(opts *IsolatedSessionOptions) {
 		opts.WorkspaceMode = string(isolation.WorkspaceOverlay)
 	}
 	if opts.EnvPassthroughMode == "" {
+		// The pre-normalization behavior of start() was: on empty mode,
+		// forward EnvSpec{Mode: deny} to bwrap WITHOUT the caller's Keys,
+		// which bwrapEnvSegment then treats as "apply the built-in secret
+		// blacklist" (see bwrapEnvSegment case EnvModeDeny with len(Keys)==0).
+		//
+		// If we normalize mode to "deny" while leaving Keys populated, bwrap
+		// would instead unset only those caller-supplied keys and skip the
+		// blacklist — a silent security regression for callers that supplied
+		// keys without mode. Clear Keys here to preserve the effective
+		// behavior (built-in blacklist wins on omitted mode).
 		opts.EnvPassthroughMode = string(isolation.EnvModeDeny)
+		opts.EnvPassthroughKeys = nil
 	}
 	if opts.UidMode == "" {
 		opts.UidMode = string(isolation.UidModeSetpriv)
