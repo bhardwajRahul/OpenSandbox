@@ -23,6 +23,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -40,6 +41,41 @@ type Client struct {
 	timeout    *time.Duration // stored separately, applied after all options
 	headers    map[string]string
 	retry      *RetryConfig
+
+	// streamClient is a dedicated HTTP client for SSE streaming, created lazily.
+	// It disables connection pooling/keep-alive and has no overall request
+	// timeout (see streamHTTPClient).
+	streamClient *http.Client
+	streamOnce   sync.Once
+}
+
+// streamHTTPClient returns a dedicated HTTP client for SSE streaming.
+//
+// Streaming differs from normal requests in two ways that make the shared
+// httpClient unsuitable:
+//   - It must not be bounded by an overall request timeout (http.Client.Timeout),
+//     because that timeout also covers reading the response body and would kill
+//     a long-running command's event stream mid-flight.
+//   - It must not reuse pooled keep-alive connections: a connection silently
+//     dropped by a load balancer while idle would stall the stream until it
+//     times out. Each stream therefore uses a fresh, non-pooled connection.
+//
+// Connection setup is still bounded by the transport's DialTimeout and
+// TLSHandshakeTimeout; only the (unbounded) body read is uncapped.
+func (c *Client) streamHTTPClient() *http.Client {
+	c.streamOnce.Do(func() {
+		sc := &http.Client{} // Timeout: 0 -> no overall request timeout
+		if tr, ok := c.httpClient.Transport.(*http.Transport); ok && tr != nil {
+			clone := tr.Clone()
+			clone.DisableKeepAlives = true // do not pool/reuse stream connections
+			sc.Transport = clone
+		} else {
+			// Custom RoundTripper: reuse it as-is (cannot toggle keep-alives).
+			sc.Transport = c.httpClient.Transport
+		}
+		c.streamClient = sc
+	})
+	return c.streamClient
 }
 
 // Option configures a Client.
@@ -260,7 +296,10 @@ func (c *Client) doStreamRequest(ctx context.Context, method, path string, body 
 		}
 		req.Header.Set("Accept", "text/event-stream")
 
-		r, err := c.httpClient.Do(req)
+		// SSE uses a dedicated non-pooled, timeout-free client so long streams
+		// are not killed by the overall request timeout and are never carried
+		// over a stale pooled connection.
+		r, err := c.streamHTTPClient().Do(req)
 		if err != nil {
 			return fmt.Errorf("opensandbox: do request: %w", err)
 		}
