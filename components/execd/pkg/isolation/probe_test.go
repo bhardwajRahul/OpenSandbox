@@ -15,6 +15,8 @@
 package isolation
 
 import (
+	"errors"
+	"slices"
 	"testing"
 )
 
@@ -58,5 +60,53 @@ func TestProbeResult_Defaults(t *testing.T) {
 	}
 	if result.DiffSupported {
 		t.Error("default ProbeResult should have DiffSupported=false")
+	}
+	if result.SetprivAvailable || result.UsernsAvailable {
+		t.Error("default ProbeResult should have both uid modes unavailable")
+	}
+}
+
+func TestSetBwrapModeAvailability(t *testing.T) {
+	probeErr := errors.New("probe failed")
+	tests := []struct {
+		name          string
+		setprivErr    error
+		usernsErr     error
+		wantAvailable bool
+		wantSetpriv   bool
+		wantUserns    bool
+	}{
+		{name: "both available", wantAvailable: true, wantSetpriv: true, wantUserns: true},
+		{name: "setpriv only", usernsErr: probeErr, wantAvailable: true, wantSetpriv: true},
+		{name: "userns only", setprivErr: probeErr, wantAvailable: true, wantUserns: true},
+		{name: "neither available", setprivErr: probeErr, usernsErr: probeErr},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ProbeResult{}
+			setBwrapModeAvailability(&result, tt.setprivErr, tt.usernsErr)
+			if result.Available != tt.wantAvailable {
+				t.Errorf("Available = %v, want %v", result.Available, tt.wantAvailable)
+			}
+			if result.SetprivAvailable != tt.wantSetpriv {
+				t.Errorf("SetprivAvailable = %v, want %v", result.SetprivAvailable, tt.wantSetpriv)
+			}
+			if result.UsernsAvailable != tt.wantUserns {
+				t.Errorf("UsernsAvailable = %v, want %v", result.UsernsAvailable, tt.wantUserns)
+			}
+		})
+	}
+}
+
+func TestBwrapSmokeArgs_UsernsFlag(t *testing.T) {
+	setprivArgs := bwrapSmokeArgs(false)
+	if slices.Contains(setprivArgs, "--unshare-user") {
+		t.Errorf("setpriv smoke args unexpectedly contain --unshare-user: %v", setprivArgs)
+	}
+
+	usernsArgs := bwrapSmokeArgs(true)
+	if !slices.Contains(usernsArgs, "--unshare-user") {
+		t.Errorf("userns smoke args do not contain --unshare-user: %v", usernsArgs)
 	}
 }

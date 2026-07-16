@@ -32,6 +32,8 @@ type ProbeResult struct {
 	Isolator         string
 	Version          string
 	Message          string // diagnostic message when unavailable
+	SetprivAvailable bool   // setpriv uid mode can create the required namespaces
+	UsernsAvailable  bool   // userns uid mode can create the required namespaces
 	CommitSupported  bool   // Phase 2
 	DiffSupported    bool   // Phase 2
 	PersistAvailable bool   // Phase 2 — requires emptyDir
@@ -64,15 +66,28 @@ func Probe(cfg ProbeConfig) ProbeResult {
 		return result
 	}
 
-	result.Available = true
 	result.Isolator = "bwrap"
 	result.Version = version
 
-	// Smoke test: verify bwrap can actually create a namespace.
-	if err := probeBwrapSmoke(); err != nil {
-		result.Message = fmt.Sprintf("bwrap found (v%s) but smoke test failed: %v", version, err)
+	// Probe each uid mode independently. Some environments allow an
+	// unprivileged user namespace but do not grant the capabilities required
+	// by setpriv mode (or vice versa), so one failing mode must not disable the
+	// other.
+	setprivErr := probeBwrapSetprivSmoke()
+	usernsErr := probeBwrapUsernsSmoke()
+	setBwrapModeAvailability(&result, setprivErr, usernsErr)
+	if setprivErr != nil {
+		log.Warn("isolation probe: setpriv uid mode unavailable: %v", setprivErr)
+	}
+	if usernsErr != nil {
+		log.Warn("isolation probe: userns uid mode unavailable: %v", usernsErr)
+	}
+	if !result.Available {
+		result.Message = fmt.Sprintf(
+			"bwrap found (v%s) but no uid mode is available (setpriv: %v; userns: %v)",
+			version, setprivErr, usernsErr,
+		)
 		log.Warn("isolation probe: %s", result.Message)
-		result.Available = false
 		return result
 	}
 
@@ -82,6 +97,12 @@ func Probe(cfg ProbeConfig) ProbeResult {
 	}
 
 	return result
+}
+
+func setBwrapModeAvailability(result *ProbeResult, setprivErr, usernsErr error) {
+	result.SetprivAvailable = setprivErr == nil
+	result.UsernsAvailable = usernsErr == nil
+	result.Available = result.SetprivAvailable || result.UsernsAvailable
 }
 
 // probeBwrapVersion returns the bwrap version string if available.
@@ -115,24 +136,43 @@ func parseBwrapVersion(out string) string {
 	return match[1]
 }
 
-// probeBwrapSmoke verifies bwrap can create a minimal namespace.
-func probeBwrapSmoke() error {
+// probeBwrapSetprivSmoke verifies bwrap can create the namespaces used by the
+// default setpriv uid mode.
+func probeBwrapSetprivSmoke() error {
+	return probeBwrapSmoke(false)
+}
+
+// probeBwrapUsernsSmoke verifies bwrap can create the namespaces used by the
+// userns uid mode.
+func probeBwrapUsernsSmoke() error {
+	return probeBwrapSmoke(true)
+}
+
+func probeBwrapSmoke(userns bool) error {
 	p := findBwrap()
 	if p == "" {
 		return fmt.Errorf("bwrap not found")
 	}
-	cmd := exec.Command(p,
-		"--unshare-pid", "--unshare-uts", "--unshare-ipc", "--unshare-cgroup",
-		"--ro-bind", "/", "/",
-		"--proc", "/proc",
-		"--", "true",
-	)
+	cmd := exec.Command(p, bwrapSmokeArgs(userns)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("bwrap smoke test failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+func bwrapSmokeArgs(userns bool) []string {
+	args := []string{
+		"--unshare-pid", "--unshare-uts", "--unshare-ipc", "--unshare-cgroup",
+		"--ro-bind", "/", "/",
+		"--proc", "/proc",
+		"--", "true",
+	}
+	if userns {
+		args = append([]string{"--unshare-user"}, args...)
+	}
+	return args
 }
 
 // probeOverlayMount tests whether bwrap can create an overlay mount.

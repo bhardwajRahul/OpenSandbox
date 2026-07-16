@@ -57,6 +57,22 @@ Isolated sessions run a bash process inside a per-execution
 created via `POST /v1/isolated/session`. Beyond the workspace, callers can
 expose additional host paths into the namespace.
 
+### UID modes and capabilities
+
+The optional `uid_mode` request field selects how identity is established:
+
+- `setpriv` (the default) uses the container's existing user namespace and
+  drops to the requested UID/GID with `setpriv`.
+- `userns` creates a new user namespace and maps the requested UID/GID inside
+  it, which can work in environments where the capabilities required by
+  `setpriv` mode are unavailable.
+
+At startup, execd probes both modes independently. `GET
+/v1/isolated/capabilities` reports `setpriv_available` and
+`userns_available`; the overall `available` field is true when either mode is
+usable. Creating a session returns `503 NOT_SUPPORTED` only when the selected
+mode is unavailable.
+
 ### Bind mounts
 
 Two request fields control extra host paths:

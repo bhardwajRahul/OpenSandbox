@@ -35,6 +35,8 @@ class CapabilitiesResponse:
         isolator (str | Unset):
         version (str | Unset):
         message (str | Unset): Diagnostic message when isolation is unavailable
+        setpriv_available (bool | Unset): Whether sessions using uid_mode setpriv can be created
+        userns_available (bool | Unset): Whether sessions using uid_mode userns can be created
         commit_supported (bool | Unset):
         diff_supported (bool | Unset):
     """
@@ -43,6 +45,8 @@ class CapabilitiesResponse:
     isolator: str | Unset = UNSET
     version: str | Unset = UNSET
     message: str | Unset = UNSET
+    setpriv_available: bool | Unset = UNSET
+    userns_available: bool | Unset = UNSET
     commit_supported: bool | Unset = UNSET
     diff_supported: bool | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -55,6 +59,10 @@ class CapabilitiesResponse:
         version = self.version
 
         message = self.message
+
+        setpriv_available = self.setpriv_available
+
+        userns_available = self.userns_available
 
         commit_supported = self.commit_supported
 
@@ -71,6 +79,10 @@ class CapabilitiesResponse:
             field_dict["version"] = version
         if message is not UNSET:
             field_dict["message"] = message
+        if setpriv_available is not UNSET:
+            field_dict["setpriv_available"] = setpriv_available
+        if userns_available is not UNSET:
+            field_dict["userns_available"] = userns_available
         if commit_supported is not UNSET:
             field_dict["commit_supported"] = commit_supported
         if diff_supported is not UNSET:
@@ -89,6 +101,10 @@ class CapabilitiesResponse:
 
         message = d.pop("message", UNSET)
 
+        setpriv_available = d.pop("setpriv_available", UNSET)
+
+        userns_available = d.pop("userns_available", UNSET)
+
         commit_supported = d.pop("commit_supported", UNSET)
 
         diff_supported = d.pop("diff_supported", UNSET)
@@ -98,6 +114,8 @@ class CapabilitiesResponse:
             isolator=isolator,
             version=version,
             message=message,
+            setpriv_available=setpriv_available,
+            userns_available=userns_available,
             commit_supported=commit_supported,
             diff_supported=diff_supported,
         )

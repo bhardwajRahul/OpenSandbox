@@ -133,6 +133,31 @@ class IsolatedSessionsAdapterTest {
     }
 
     @Test
+    fun `capabilities maps uid mode availability`() {
+        mockWebServer.enqueue(
+            MockResponse()
+                .setBody(
+                    """
+                    {
+                      "available": true,
+                      "isolator": "bwrap",
+                      "setpriv_available": false,
+                      "userns_available": true,
+                      "commit_supported": false,
+                      "diff_supported": false
+                    }
+                    """.trimIndent(),
+                ),
+        )
+
+        val capabilities = adapter.capabilities()
+
+        assertEquals("/v1/isolated/capabilities", mockWebServer.takeRequest().path)
+        assertEquals(false, capabilities.setprivAvailable)
+        assertEquals(true, capabilities.usernsAvailable)
+    }
+
+    @Test
     fun `create serializes uid and gid above Int MaxValue`() {
         // Spec declares uid/gid as uint32; values above Int.MAX_VALUE must not fail.
         val uidAboveInt = 3_000_000_000L

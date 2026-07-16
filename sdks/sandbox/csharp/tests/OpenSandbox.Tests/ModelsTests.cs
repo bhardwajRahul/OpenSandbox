@@ -22,6 +22,26 @@ namespace OpenSandbox.Tests;
 public class ModelsTests
 {
     [Fact]
+    public void IsolatedCapabilities_ShouldDeserializeModeAvailability()
+    {
+        const string json = """
+        {
+          "available": true,
+          "setpriv_available": false,
+          "userns_available": true,
+          "commit_supported": false,
+          "diff_supported": false
+        }
+        """;
+
+        var capabilities = JsonSerializer.Deserialize<IsolatedCapabilities>(json);
+
+        capabilities.Should().NotBeNull();
+        capabilities!.SetprivAvailable.Should().BeFalse();
+        capabilities.UsernsAvailable.Should().BeTrue();
+    }
+
+    [Fact]
     public void Execution_ShouldInitializeWithEmptyCollections()
     {
         // Arrange & Act

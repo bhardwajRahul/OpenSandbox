@@ -101,6 +101,8 @@ public record IsolatedCapabilities(
     [property: JsonPropertyName("isolator")] string? Isolator = null,
     [property: JsonPropertyName("version")] string? Version = null,
     [property: JsonPropertyName("message")] string? Message = null,
+    [property: JsonPropertyName("setpriv_available")] bool SetprivAvailable = false,
+    [property: JsonPropertyName("userns_available")] bool UsernsAvailable = false,
     [property: JsonPropertyName("commit_supported")] bool CommitSupported = false,
     [property: JsonPropertyName("diff_supported")] bool DiffSupported = false
 );

@@ -283,6 +283,12 @@ class IsolatedCapabilities(BaseModel):
     message: str | None = Field(
         default=None, description="Diagnostic message when unavailable"
     )
+    setpriv_available: bool = Field(
+        default=False, description="Whether setpriv uid mode is available"
+    )
+    userns_available: bool = Field(
+        default=False, description="Whether userns uid mode is available"
+    )
     commit_supported: bool = Field(
         default=False, description="Whether commit is supported"
     )

@@ -165,6 +165,9 @@ func (r *IsolatedRunner) CreateIsolatedSession(opts *IsolatedSessionOptions) (st
 	// aligned with the effective config without changing runtime
 	// behavior.
 	normalizeIsolatedOptions(opts)
+	if err := r.validateUidModeAvailable(isolation.UidMode(opts.UidMode)); err != nil {
+		return "", err
+	}
 
 	if err := os.MkdirAll(opts.WorkspacePath, 0o755); err != nil {
 		return "", fmt.Errorf("create workspace: %w", err)
@@ -536,6 +539,21 @@ func (r *IsolatedRunner) GetMergedView(id string) (vfs.FS, error) {
 // Capabilities returns the current isolator capabilities.
 func (r *IsolatedRunner) Capabilities() isolation.Capabilities {
 	return r.isolator.Capabilities()
+}
+
+func (r *IsolatedRunner) validateUidModeAvailable(mode isolation.UidMode) error {
+	caps := r.isolator.Capabilities()
+	switch mode {
+	case isolation.UidModeSetpriv:
+		if !caps.SetprivAvailable {
+			return fmt.Errorf("%w: %s", ErrUidModeUnavailable, mode)
+		}
+	case isolation.UidModeUserns:
+		if !caps.UsernsAvailable {
+			return fmt.Errorf("%w: %s", ErrUidModeUnavailable, mode)
+		}
+	}
+	return nil
 }
 
 func (r *IsolatedRunner) lookup(id string) *isolatedSession {

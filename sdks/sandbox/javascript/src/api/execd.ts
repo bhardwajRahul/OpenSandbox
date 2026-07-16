@@ -1366,6 +1366,10 @@ export interface components {
             version?: string;
             /** @description Diagnostic message when isolation is unavailable */
             message?: string;
+            /** @description Whether sessions using uid_mode setpriv can be created */
+            setpriv_available?: boolean;
+            /** @description Whether sessions using uid_mode userns can be created */
+            userns_available?: boolean;
             commit_supported?: boolean;
             diff_supported?: boolean;
         };

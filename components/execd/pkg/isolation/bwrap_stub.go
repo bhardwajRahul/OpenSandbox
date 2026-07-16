@@ -33,6 +33,11 @@ func NewBwrap(_ Config) Isolator {
 	return &bwrapStub{}
 }
 
+// NewBwrapWithProbe returns a stub on non-Linux platforms.
+func NewBwrapWithProbe(_ Config, _ ProbeResult) Isolator {
+	return &bwrapStub{}
+}
+
 func (b *bwrapStub) Name() string               { return "bwrap" }
 func (b *bwrapStub) Available() bool            { return false }
 func (b *bwrapStub) Capabilities() Capabilities { return Capabilities{Available: false} }

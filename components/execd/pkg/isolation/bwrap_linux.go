@@ -77,10 +77,22 @@ func isSetuidBinary(path string) bool {
 }
 
 // bwrapImpl is the Linux bwrap Isolator.
-type bwrapImpl struct{}
+type bwrapImpl struct {
+	probe ProbeResult
+}
 
 // NewBwrap returns a bwrap Isolator for Linux, configured by cfg.
 func NewBwrap(cfg Config) Isolator {
+	probe := Probe(ProbeConfig{
+		UpperRoot:     cfg.UpperRoot,
+		UpperMaxBytes: cfg.UpperMaxBytes,
+	})
+	return NewBwrapWithProbe(cfg, probe)
+}
+
+// NewBwrapWithProbe returns a bwrap Isolator using an existing startup probe.
+// It avoids repeating namespace smoke tests when the caller already probed.
+func NewBwrapWithProbe(cfg Config, probe ProbeResult) Isolator {
 	bwrapPath = findBwrap()
 	bwrapIsSetuid = isSetuidBinary(bwrapPath)
 
@@ -91,32 +103,22 @@ func NewBwrap(cfg Config) Isolator {
 		seccompBPF = bpf
 	}
 
-	return &bwrapImpl{}
+	return &bwrapImpl{probe: probe}
 }
 
 func (b *bwrapImpl) Name() string { return "bwrap" }
 
 func (b *bwrapImpl) Available() bool {
-	if bwrapPath == "" {
-		bwrapPath = findBwrap()
-	}
-	return bwrapPath != ""
+	return b.probe.Available
 }
 
 func (b *bwrapImpl) Capabilities() Capabilities {
-	if bwrapPath == "" {
-		bwrapPath = findBwrap()
-	}
-
-	version, err := probeBwrapVersion()
-	if err != nil {
-		version = ""
-	}
-
 	return Capabilities{
-		Available:              bwrapPath != "",
-		Isolator:               "bwrap",
-		Version:                version,
+		Available:              b.probe.Available,
+		Isolator:               b.probe.Isolator,
+		Version:                b.probe.Version,
+		SetprivAvailable:       b.probe.SetprivAvailable,
+		UsernsAvailable:        b.probe.UsernsAvailable,
 		Profiles:               []Profile{ProfileStrict, ProfileBalanced},
 		ShareNetOverridable:    true,
 		CommitSupported:        false, // Phase 2

@@ -100,6 +100,8 @@ data class IsolatedCapabilities(
     val isolator: String? = null,
     val version: String? = null,
     val message: String? = null,
+    val setprivAvailable: Boolean = false,
+    val usernsAvailable: Boolean = false,
     val commitSupported: Boolean = false,
     val diffSupported: Boolean = false,
 )

@@ -109,6 +109,8 @@ type Capabilities struct {
 	Available              bool
 	Isolator               string
 	Version                string
+	SetprivAvailable       bool
+	UsernsAvailable        bool
 	Profiles               []Profile
 	AllowedWorkspaces      []string
 	AllowedExtraWritable   []string

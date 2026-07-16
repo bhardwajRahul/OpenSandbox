@@ -18,6 +18,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,10 +44,12 @@ func newStubIsolator() *stubIsolator {
 	return &stubIsolator{
 		available: true,
 		caps: isolation.Capabilities{
-			Available:       true,
-			Isolator:        "stub",
-			CommitSupported: false,
-			DiffSupported:   false,
+			Available:        true,
+			Isolator:         "stub",
+			SetprivAvailable: true,
+			UsernsAvailable:  true,
+			CommitSupported:  false,
+			DiffSupported:    false,
 		},
 	}
 }
@@ -72,6 +75,52 @@ func TestNewIsolatedRunner(t *testing.T) {
 	}
 	if !runner.Available() {
 		t.Error("runner should be available with stub isolator")
+	}
+}
+
+func TestCreateIsolatedSession_RejectsOnlyUnavailableUidMode(t *testing.T) {
+	tests := []struct {
+		name             string
+		mode             string
+		setprivAvailable bool
+		usernsAvailable  bool
+		wantUnavailable  bool
+	}{
+		{name: "setpriv supported", mode: "setpriv", setprivAvailable: true},
+		{name: "setpriv unsupported", mode: "setpriv", usernsAvailable: true, wantUnavailable: true},
+		{name: "default setpriv unsupported", mode: "", usernsAvailable: true, wantUnavailable: true},
+		{name: "userns supported", mode: "userns", usernsAvailable: true},
+		{name: "userns unsupported", mode: "userns", setprivAvailable: true, wantUnavailable: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := newTestRunner(t)
+			stub := runner.isolator.(*stubIsolator)
+			stub.caps.SetprivAvailable = tt.setprivAvailable
+			stub.caps.UsernsAvailable = tt.usernsAvailable
+
+			opts := &IsolatedSessionOptions{
+				WorkspacePath: filepath.Join(t.TempDir(), "workspace"),
+				WorkspaceMode: "rw",
+				UidMode:       tt.mode,
+			}
+			id, err := runner.CreateIsolatedSession(opts)
+			if tt.wantUnavailable {
+				if !errors.Is(err, ErrUidModeUnavailable) {
+					t.Fatalf("error = %v, want ErrUidModeUnavailable", err)
+				}
+				if id != "" {
+					t.Errorf("session id = %q, want empty", id)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("CreateIsolatedSession: %v", err)
+			}
+			defer runner.DeleteIsolatedSession(id)
+		})
 	}
 }
 
