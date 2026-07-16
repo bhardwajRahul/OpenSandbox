@@ -33,7 +33,6 @@ jobs:
     if: needs.changes.outputs.relevant == 'true'
     runs-on: self-hosted
     env:
-      UV_BIN: /home/admin/.local/bin
       RUN_CODE_INTERPRETER_E2E: ${{ github.event_name == 'workflow_dispatch' && inputs.run_code_interpreter_e2e == true && 'true' || 'false' }}
     steps:
       - name: Checkout code
@@ -42,10 +41,11 @@ jobs:
       - name: Clean Docker runner cache
         run: bash scripts/ci-docker-cleanup.sh
 
-      - name: Set up uv PATH and verify
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Verify uv
         run: |
-          echo "${UV_BIN}" >> "$GITHUB_PATH"
-          export PATH="${UV_BIN}:${PATH}"
           uv --version
           uv run python --version
 
@@ -133,7 +133,6 @@ jobs:
     if: needs.changes.outputs.relevant == 'true'
     runs-on: self-hosted
     env:
-      UV_BIN: /home/admin/.local/bin
       RUN_CODE_INTERPRETER_E2E: ${{ github.event_name == 'workflow_dispatch' && inputs.run_code_interpreter_e2e == true && 'true' || 'false' }}
     steps:
       - name: Checkout code
@@ -142,10 +141,11 @@ jobs:
       - name: Clean Docker runner cache
         run: bash scripts/ci-docker-cleanup.sh
 
-      - name: Set up uv PATH and verify
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Verify uv
         run: |
-          echo "${UV_BIN}" >> "$GITHUB_PATH"
-          export PATH="${UV_BIN}:${PATH}"
           uv --version
           uv run python --version
 
@@ -253,7 +253,6 @@ jobs:
     if: needs.changes.outputs.relevant == 'true'
     runs-on: self-hosted
     env:
-      UV_BIN: /home/admin/.local/bin
       NODE_VERSION: "20.19.0"
       RUN_CODE_INTERPRETER_E2E: ${{ github.event_name == 'workflow_dispatch' && inputs.run_code_interpreter_e2e == true && 'true' || 'false' }}
     steps:
@@ -263,10 +262,11 @@ jobs:
       - name: Clean Docker runner cache
         run: bash scripts/ci-docker-cleanup.sh
 
-      - name: Set up uv PATH and verify
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Verify uv
         run: |
-          echo "${UV_BIN}" >> "$GITHUB_PATH"
-          export PATH="${UV_BIN}:${PATH}"
           uv --version
           uv run python --version
 
@@ -357,7 +357,6 @@ jobs:
     if: needs.changes.outputs.relevant == 'true'
     runs-on: self-hosted
     env:
-      UV_BIN: /home/admin/.local/bin
       RUN_CODE_INTERPRETER_E2E: ${{ github.event_name == 'workflow_dispatch' && inputs.run_code_interpreter_e2e == true && 'true' || 'false' }}
     steps:
       - name: Checkout code
@@ -366,10 +365,11 @@ jobs:
       - name: Clean Docker runner cache
         run: bash scripts/ci-docker-cleanup.sh
 
-      - name: Set up uv PATH and verify
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Verify uv
         run: |
-          echo "${UV_BIN}" >> "$GITHUB_PATH"
-          export PATH="${UV_BIN}:${PATH}"
           uv --version
           uv run python --version
 
@@ -450,7 +450,6 @@ jobs:
     if: needs.changes.outputs.relevant == 'true'
     runs-on: self-hosted
     env:
-      UV_BIN: /home/admin/.local/bin
       HOME: /home/admin/actions-runner
       GOCACHE: /home/admin/actions-runner/_temp/go-build
       GOMODCACHE: /home/admin/actions-runner/_temp/go-mod-cache
@@ -462,10 +461,11 @@ jobs:
       - name: Clean Docker runner cache
         run: bash scripts/ci-docker-cleanup.sh
 
-      - name: Set up uv PATH and verify
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Verify uv
         run: |
-          echo "${UV_BIN}" >> "$GITHUB_PATH"
-          export PATH="${UV_BIN}:${PATH}"
           uv --version
           uv run python --version
 
