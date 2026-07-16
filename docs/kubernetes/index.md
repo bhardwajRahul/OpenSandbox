@@ -370,6 +370,10 @@ spec:
   poolRef: example-pool
 ```
 
+::: warning Per-request network policies
+Pool pods are created before allocation. The lifecycle API therefore rejects `networkPolicy` together with `extensions.poolRef`; it cannot inject an egress sidecar into an existing pool pod. Configure required network controls in the Pool pod template before pods are created, or use a non-pooled sandbox for per-request policies.
+:::
+
 #### Pooled Sandbox with Heterogeneous Tasks
 Create a batch of sandboxes with process-based heterogeneous tasks. For task execution to work properly, the task-executor must be deployed as a sidecar container in the pool template and share the process namespace with the sandbox container:
 

@@ -688,6 +688,16 @@ class TestCreateSandboxRequestPoolMode:
             exc_info.value
         )
 
+    def test_pool_mode_rejects_network_policy(self):
+        with pytest.raises(ValidationError) as exc_info:
+            CreateSandboxRequest(
+                extensions={"poolRef": "my-pool"},
+                networkPolicy={"defaultAction": "deny", "egress": []},
+            )
+        assert "networkPolicy cannot be used together with poolRef" in str(
+            exc_info.value
+        )
+
     def test_resource_limits_required_without_pool_ref(self):
         """Without poolRef, resourceLimits is still required (image mode)."""
         with pytest.raises(ValidationError):
