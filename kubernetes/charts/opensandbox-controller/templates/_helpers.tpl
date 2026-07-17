@@ -102,6 +102,13 @@ Create the name for the manager role
 {{- end }}
 
 {{/*
+Create the name for the metrics auth role
+*/}}
+{{- define "opensandbox.metricsAuthRoleName" -}}
+{{- print "opensandbox-metrics-auth-role" }}
+{{- end }}
+
+{{/*
 Return the appropriate apiVersion for RBAC APIs
 */}}
 {{- define "opensandbox.rbac.apiVersion" -}}

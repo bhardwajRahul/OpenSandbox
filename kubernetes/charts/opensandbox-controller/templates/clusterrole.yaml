@@ -142,4 +142,30 @@ rules:
   - patch
   - update
 
+{{- if and .Values.controller.metrics.enabled .Values.controller.metrics.secure }}
+---
+# Metrics auth ClusterRole: lets the controller-runtime secure metrics filter
+# perform TokenReview / SubjectAccessReview. Mirrors config/rbac/metrics_auth_role.yaml.
+apiVersion: {{ include "opensandbox.rbac.apiVersion" . }}
+kind: ClusterRole
+metadata:
+  name: {{ include "opensandbox.metricsAuthRoleName" . }}
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rbac
+rules:
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - subjectaccessreviews
+  verbs:
+  - create
+{{- end }}
+
 {{- end }}
