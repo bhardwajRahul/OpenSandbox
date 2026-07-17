@@ -52,6 +52,10 @@ spec:
         {{- end }}
         - --health-probe-bind-address=:8081
         - --zap-log-level={{ .Values.controller.logLevel }}
+        {{- if .Values.controller.metrics.enabled }}
+        - --metrics-bind-address=:{{ .Values.controller.metrics.port }}
+        - --metrics-secure={{ .Values.controller.metrics.secure }}
+        {{- end }}
         {{- if and .Values.controller.kubeClient (gt (int .Values.controller.kubeClient.qps) 0) }}
         - --kube-client-qps={{ .Values.controller.kubeClient.qps }}
         {{- end }}
@@ -86,6 +90,11 @@ spec:
         - name: health
           containerPort: 8081
           protocol: TCP
+        {{- if .Values.controller.metrics.enabled }}
+        - name: metrics
+          containerPort: {{ .Values.controller.metrics.port }}
+          protocol: TCP
+        {{- end }}
         {{- with .Values.controller.containerSecurityContext }}
         securityContext:
           {{- toYaml . | nindent 10 }}
