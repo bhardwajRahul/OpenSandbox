@@ -1,3 +1,4 @@
+{{- $metrics := .Values.controller.metrics | default dict -}}
 {{- if .Values.rbac.create -}}
 ---
 # Leader election role binding
@@ -36,7 +37,7 @@ subjects:
   name: {{ include "opensandbox.serviceAccountName" . }}
   namespace: {{ include "opensandbox.namespace" . }}
 
-{{- if and .Values.controller.metrics.enabled .Values.controller.metrics.secure }}
+{{- if and $metrics.enabled $metrics.secure }}
 ---
 # Metrics auth ClusterRoleBinding
 apiVersion: {{ include "opensandbox.rbac.apiVersion" . }}

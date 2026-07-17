@@ -40,7 +40,9 @@ controller:
 ```
 
 - With `secure: false` the endpoint is plain HTTP and can be scraped directly (no TLS or bearer token).
-- With `secure: true` the controller-runtime filter authenticates and authorizes each scrape via `TokenReview`/`SubjectAccessReview`; the chart then also provisions the required `metrics-auth` `ClusterRole` and binding automatically, and scrapers must present a bearer token with metrics-reader access.
+- With `secure: true` the controller-runtime filter authenticates and authorizes each scrape via `TokenReview`/`SubjectAccessReview`. The chart then provisions two `ClusterRole`s automatically:
+  - `opensandbox-metrics-auth-role` (bound to the manager) — lets the controller run the auth checks.
+  - `opensandbox-metrics-reader` (**not** bound by the chart) — grants `get` on the `/metrics` non-resource URL. Bind it to your scraper's `ServiceAccount` (e.g. Prometheus) and have the scraper present that account's bearer token.
 
 Point your Prometheus stack at the `metrics` container port (for example via a `ServiceMonitor` or `PodMonitoring`).
 

@@ -109,6 +109,13 @@ Create the name for the metrics auth role
 {{- end }}
 
 {{/*
+Create the name for the metrics reader role (bind to your scraper's ServiceAccount)
+*/}}
+{{- define "opensandbox.metricsReaderRoleName" -}}
+{{- print "opensandbox-metrics-reader" }}
+{{- end }}
+
+{{/*
 Return the appropriate apiVersion for RBAC APIs
 */}}
 {{- define "opensandbox.rbac.apiVersion" -}}
