@@ -92,8 +92,8 @@ canonical reference; refer to the per-language builder or constructor for exact 
 | `max_idle`                            | required (≥ 0)                     | Target size and cap of the idle buffer                                           |
 | `state_store`                         | required (Go builder defaults to in-memory) | `InMemoryPoolStateStore` or Redis-backed store                          |
 | `connection_config`                   | required                           | Used for lifecycle and execd calls                                               |
-| `creation_spec`                       | required (unless `sandbox_creator`) | Template for warmed sandboxes: `image`, `entrypoint`, `env`, `metadata`, `extensions`, `resource`, `network_policy`, `platform`, `volumes`, `secure_access` |
-| `sandbox_creator`                     | `null`                             | Callback that fully overrides `creation_spec`; receives a `PooledSandboxCreateContext` with `reason=WARMUP` or `reason=DIRECT_CREATE` |
+| `creation_spec`                       | required in Python / Kotlin; required in Go only when `sandbox_creator` is unset | Template for warmed sandboxes: `image`, `entrypoint`, `env`, `metadata`, `extensions`, `resource`, `network_policy`, `platform`, `volumes`, `secure_access` |
+| `sandbox_creator`                     | `null`                             | Optional callback that overrides `creation_spec` at runtime. Python and Kotlin still require `creation_spec` to be supplied (it is unused when the creator is set); only Go allows a creator-only pool. Receives a `PooledSandboxCreateContext` whose `reason` field is `WARMUP` for warmup and `DIRECT_CREATE` (Python / Kotlin) or `CreateReasonAcquire` / `"ACQUIRE"` (Go) for the acquire-fallback path. |
 | `warmup_concurrency`                  | `max(1, ceil(max_idle * 0.2))`     | Warmup worker pool size                                                          |
 | `primary_lock_ttl`                    | `60 s`                             | Leader-lock TTL; must exceed `warmup_ready_timeout` + preparer time              |
 | `reconcile_interval`                  | `30 s`                             | Interval between reconcile ticks                                                 |
@@ -128,8 +128,12 @@ canonical reference; refer to the per-language builder or constructor for exact 
 - `max_idle` bounds the warm buffer only. It does not cap borrowed sandboxes or
   `DIRECT_CREATE` fallbacks.
 - All nodes sharing one pool must use the same creation and warmup definition. If that
-  definition changes, use a new `pool_name` (or Redis `key_prefix`) and drain the old
-  pool.
+  definition changes, roll out under a **new** `pool_name` (or Redis `key_prefix`) and
+  retire the old pool with `SandboxPoolManager.destroy(...)`. Do not attempt to refill
+  a changed template into the same `pool_name`: `release_all_idle()` does not fence
+  other nodes, does not lower `max_idle`, and does not stop any current leader (which
+  may still be running the old code) from immediately re-publishing old-template
+  sandbox IDs into the shared buffer during a rolling deploy.
 - `resize(max_idle)` and `release_all_idle()` can be called from any node.
 
 ## Minimal usage
@@ -276,9 +280,13 @@ Every SDK exposes read-only accessors:
   consecutive failures, last error).
 - `snapshot_idle_entries()` — the current idle sandbox IDs with expiry timestamps.
 - `resize(max_idle)` — change the target buffer size at runtime.
-- `release_all_idle()` — drain the idle buffer without stopping the pool (useful when
-  the creation template changes and you want to force a refill on the same
-  `pool_name`).
+- `release_all_idle()` — drain the currently visible idle buffer and best-effort kill
+  each entry, without stopping the pool. Useful to force a fresh set of warmups after a
+  transient upstream problem. It does **not** change `max_idle`, does **not** fence
+  other nodes, and does **not** stop an active leader from immediately replenishing —
+  so it is not a safe way to swap creation templates on the same `pool_name`. For that
+  case, roll out under a new `pool_name` and use `SandboxPoolManager.destroy(...)` on
+  the old one.
 
 For destructive administrative operations across a whole distributed pool (fence,
 drain, clear-state, tombstone), use `SandboxPoolManager.destroy(poolName)` (Kotlin,
