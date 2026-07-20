@@ -84,6 +84,13 @@ public class ConnectionConfigOptions
     /// Gets or sets whether to disable endpoint caching entirely.
     /// </summary>
     public bool? EndpointCacheDisabled { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether to disable best-effort SDK telemetry
+    /// (sandbox.create latency reports). Also honored via
+    /// OPENSANDBOX_DISABLE_METRICS=1 environment variable.
+    /// </summary>
+    public bool? DisableMetrics { get; set; }
 }
 
 /// <summary>
@@ -141,6 +148,13 @@ public sealed class ConnectionConfig
     public bool EndpointCacheDisabled { get; }
 
     /// <summary>
+    /// Gets whether best-effort SDK telemetry (sandbox.create latency reports)
+    /// is disabled. Honors the OPENSANDBOX_DISABLE_METRICS=1 environment
+    /// variable in addition to the explicit option.
+    /// </summary>
+    public bool DisableMetrics { get; }
+
+    /// <summary>
     /// Gets the user agent string.
     /// </summary>
     public string UserAgent { get; } = Constants.DefaultUserAgent;
@@ -170,6 +184,10 @@ public sealed class ConnectionConfig
         EndpointCacheTtlSeconds = options.EndpointCacheTtlSeconds ?? 600;
         EndpointCacheSize = options.EndpointCacheSize ?? 1024;
         EndpointCacheDisabled = options.EndpointCacheDisabled ?? false;
+
+        var envDisableMetrics = Environment.GetEnvironmentVariable(Constants.EnvDisableMetrics);
+        var envDisableMetricsFlag = string.Equals(envDisableMetrics?.Trim(), "1", StringComparison.Ordinal);
+        DisableMetrics = (options.DisableMetrics ?? false) || envDisableMetricsFlag;
 
         var headers = new Dictionary<string, string>(options.Headers ?? new Dictionary<string, string>());
 

@@ -79,6 +79,12 @@ public static class Constants
     public const string EnvApiKey = "OPEN_SANDBOX_API_KEY";
 
     /// <summary>
+    /// Environment variable name to disable best-effort SDK telemetry.
+    /// Set to "1" to disable.
+    /// </summary>
+    public const string EnvDisableMetrics = "OPENSANDBOX_DISABLE_METRICS";
+
+    /// <summary>
     /// Header name for the API key.
     /// </summary>
     public const string ApiKeyHeader = "OPEN-SANDBOX-API-KEY";
