@@ -683,15 +683,22 @@ class TestCreateSandboxRequestPoolMode:
         errors = exc_info.value.errors()
         assert any("snapshotId" in str(e) and "poolRef" in str(e) for e in errors)
 
-    def test_pool_mode_rejects_credential_proxy(self):
-        with pytest.raises(ValidationError) as exc_info:
-            CreateSandboxRequest(
-                extensions={"poolRef": "my-pool"},
-                credentialProxy=CredentialProxyConfig(enabled=True),
-            )
-        assert "credentialProxy.enabled cannot be used together with poolRef" in str(
-            exc_info.value
+    def test_pool_mode_parses_credential_proxy_for_service_validation(self):
+        """The service returns the documented 400 instead of a parsing-time 422."""
+        request = CreateSandboxRequest(
+            extensions={"poolRef": "my-pool"},
+            credentialProxy=CredentialProxyConfig(enabled=True),
         )
+        assert request.credential_proxy is not None
+        assert request.credential_proxy.enabled is True
+
+    def test_pool_mode_parses_network_policy_for_service_validation(self):
+        """The service returns the documented 400 instead of a parsing-time 422."""
+        request = CreateSandboxRequest(
+            extensions={"poolRef": "my-pool"},
+            networkPolicy={"defaultAction": "deny", "egress": []},
+        )
+        assert request.network_policy is not None
 
     def test_resource_limits_required_without_pool_ref(self):
         """Without poolRef, resourceLimits is still required (image mode)."""

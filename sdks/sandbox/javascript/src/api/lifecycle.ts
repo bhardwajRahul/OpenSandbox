@@ -1078,7 +1078,8 @@ export interface components {
          *     **Pool mode**: When `extensions.poolRef` is set, the sandbox is created from
          *     a pre-configured pool. In this case `image`, `entrypoint`, and
          *     `resourceLimits` are all optional (defined by the Pool CRD template).
-         *     `snapshotId` must not be provided together with `poolRef`.
+         *     `snapshotId`, `networkPolicy`, `platform`, `volumes`, and
+         *     `credentialProxy.enabled` must not be provided together with `poolRef`.
          *
          *     **Note**: API Key authentication is required via the `OPEN-SANDBOX-API-KEY` header.
          */
@@ -1178,6 +1179,9 @@ export interface components {
              * @description Optional outbound network policy for the sandbox.
              *     Shape matches the sidecar `/policy` endpoint. If omitted or empty,
              *     the sidecar starts in allow-all mode until updated.
+             *     Not supported together with `extensions.poolRef`; pooled pods are
+             *     pre-created, so the server rejects this combination instead of
+             *     silently ignoring the requested policy.
              */
             networkPolicy?: components["schemas"]["NetworkPolicy"];
             /**
