@@ -613,19 +613,44 @@ async def test_async_acquire_retry_next_idle_then_create_empty_falls_through_imm
         await pool.shutdown(False)
 
 
-async def test_async_acquire_retry_next_idle_does_not_retry_when_renew_fails() -> None:
+async def test_async_acquire_retry_next_idle_renew_failure_kills_remote_without_retrying() -> (
+    None
+):
     """Regression: renew failure against a healthy connected sandbox must NOT trigger the
-    retry loop to drain more idle candidates. Renew rejections come from the lifecycle API,
-    not the sandbox itself; retrying another idle cannot fix them.
+    retry loop to drain more idle candidates. But the connected sandbox MUST be killed on
+    the remote side, since try_take_idle already popped its id out of the pool store —
+    otherwise it leaks alive-but-untracked until server-side TTL expires.
     """
-    FakeAsyncSandbox.reset()
-    FakeAsyncSandbox.fail_renew = True
+    connected: list[FakeAsyncSandbox] = []
+
+    class TrackingAsyncSandbox(FakeAsyncSandbox):
+        @classmethod
+        async def connect(
+            cls, sandbox_id: str, *args: Any, **kwargs: Any
+        ) -> FakeAsyncSandbox:
+            sb = await super().connect(sandbox_id, *args, **kwargs)
+            sb.fail_renew = True  # per-instance renew failure
+            connected.append(sb)
+            return sb
+
     store = InMemoryAsyncPoolStateStore()
     manager = FakeAsyncManager()
     for i in range(3):
         await store.put_idle("pool", f"healthy-{i}")
-    pool = _create_pool(
-        max_idle=0, store=store, manager=manager, max_acquire_retries=5
+    pool = SandboxPoolAsync(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=0,
+        warmup_concurrency=2,
+        state_store=store,
+        connection_config=ConnectionConfig(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        reconcile_interval=timedelta(milliseconds=20),
+        primary_lock_ttl=timedelta(seconds=5),
+        drain_timeout=timedelta(milliseconds=50),
+        max_acquire_retries=5,
+        sandbox_manager_factory=lambda config: _manager_factory(manager),
+        sandbox_factory=TrackingAsyncSandbox,  # type: ignore[arg-type]
     )
     await pool.start()
     try:
@@ -634,11 +659,16 @@ async def test_async_acquire_retry_next_idle_does_not_retry_when_renew_fails() -
                 sandbox_timeout=timedelta(minutes=5),
                 policy=AcquirePolicy.RETRY_NEXT_IDLE,
             )
+        assert len(connected) == 1
         counters = await store.snapshot_counters("pool")
         assert counters.idle_count == 2
         assert manager.killed == []
+        assert connected[0].killed, (
+            "renew failure must trigger sandbox.kill() to release remote resources; "
+            "otherwise the sandbox leaks alive-but-untracked until server-side TTL expiry"
+        )
+        assert connected[0].closed
     finally:
-        FakeAsyncSandbox.fail_renew = False
         await pool.shutdown(False)
 
 

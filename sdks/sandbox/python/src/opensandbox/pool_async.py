@@ -265,15 +265,29 @@ class SandboxPoolAsync:
                     )
                     raise
                 except Exception as exc:
+                    # Renew failed against a healthy sandbox. try_take_idle already popped this
+                    # id out of the store; a bare close() would only release local resources and
+                    # leave the remote sandbox alive-but-untracked until its server-side TTL
+                    # expires. Kill it best-effort, then close local resources and re-raise.
                     logger.warning(
-                        "Acquire renew failed after idle connect; not retrying "
-                        "(renew errors are not candidate-specific): "
+                        "Acquire renew failed after idle connect; killing remote sandbox and "
+                        "not retrying (renew errors are not candidate-specific): "
                         "pool_name=%s sandbox_id=%s policy=%s error=%s",
                         pool_name,
                         sandbox_id,
                         policy.value,
                         exc,
                     )
+                    try:
+                        await sandbox.kill()
+                    except Exception as kill_exc:
+                        logger.warning(
+                            "Best-effort kill after renew failure failed: "
+                            "pool_name=%s sandbox_id=%s error=%s",
+                            pool_name,
+                            sandbox_id,
+                            kill_exc,
+                        )
                     try:
                         await sandbox.close()
                     except Exception:

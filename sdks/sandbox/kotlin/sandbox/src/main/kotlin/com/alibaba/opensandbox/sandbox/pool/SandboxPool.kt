@@ -306,20 +306,34 @@ class SandboxPool internal constructor(
                     throw e
                 } catch (e: Exception) {
                     // Renew failed against a healthy sandbox. Retrying another idle will not fix a
-                    // lifecycle-API renew rejection, so we must not remove/kill this idle nor loop.
-                    // Close the just-connected sandbox best-effort and surface the error.
+                    // lifecycle-API renew rejection, so we must not loop. But `tryTakeIdle` has
+                    // already popped this ID out of the idle store — if we only close() locally,
+                    // the remote sandbox stays alive on the server until its TTL expires and is
+                    // no longer tracked anywhere (leaks against pool capacity accounting). Kill
+                    // the remote sandbox best-effort, then close local resources and rethrow.
                     logger.warn(
-                        "Acquire renew failed after idle connect; not retrying (renew errors are " +
-                            "not candidate-specific): pool_name={} sandbox_id={} policy={} error={}",
+                        "Acquire renew failed after idle connect; killing remote sandbox and not " +
+                            "retrying (renew errors are not candidate-specific): " +
+                            "pool_name={} sandbox_id={} policy={} error={}",
                         poolName,
                         sandboxId,
                         policy,
                         e.message,
                     )
                     try {
+                        sandbox.kill()
+                    } catch (killEx: Exception) {
+                        logger.warn(
+                            "Best-effort kill after renew failure failed: pool_name={} sandbox_id={} error={}",
+                            poolName,
+                            sandboxId,
+                            killEx.message,
+                        )
+                    }
+                    try {
                         sandbox.close()
                     } catch (_: Exception) {
-                        // best-effort resource release
+                        // best-effort local resource release
                     }
                     scheduleKillDiscardedAlive(poolName, pendingKill, source = "acquire")
                     throw e

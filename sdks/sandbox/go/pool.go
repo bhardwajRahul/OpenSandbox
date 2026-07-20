@@ -286,20 +286,35 @@ func (p *DefaultSandboxPool) Acquire(ctx context.Context, opts AcquireOptions) (
 				go p.killDiscardedAliveSandboxes(pendingKill)
 				return nil, &PoolAcquireFailedError{PoolName: p.config.PoolName, Cause: err}
 			}
+			// Re-check pool lifecycle between iterations. Shutdown(ctx, true) uses its own ctx
+			// to drive draining and does NOT cancel the caller's acquire ctx, so without this
+			// check the loop could keep paying AcquireReadyTimeout per retry while shutdown
+			// waits on inFlight.
+			p.mu.Lock()
+			currentState := p.lifecycleState
+			p.mu.Unlock()
+			if currentState != PoolLifecycleRunning {
+				go p.killDiscardedAliveSandboxes(pendingKill)
+				return nil, &PoolNotRunningError{PoolName: p.config.PoolName, State: currentState}
+			}
 			continue
 		}
 		// Connect + readiness succeeded. From here on the sandbox is a healthy, borrowable idle:
 		// any failure below (renew rejection, e.g. lifecycle API temporarily failing renew) is
 		// NOT a candidate-specific problem, so we must not treat it as "stale idle" and burn
-		// another retry. Close the just-connected sandbox best-effort and surface the error.
+		// another retry. But TryTakeIdle already popped this ID out of the store, so if we only
+		// Close() locally the remote sandbox stays alive on the server until its TTL expires and
+		// is no longer tracked anywhere. Kill the remote sandbox best-effort, close local
+		// resources, and surface the raw error.
 		if opts.SandboxTimeout > 0 {
 			if _, renewErr := sb.Renew(ctx, opts.SandboxTimeout); renewErr != nil {
-				p.config.Logger.Warn("acquire: renew failed after idle connect; not retrying "+
-					"(renew errors are not candidate-specific)",
+				p.config.Logger.Warn("acquire: renew failed after idle connect; killing remote "+
+					"sandbox and not retrying (renew errors are not candidate-specific)",
 					"pool_name", p.config.PoolName,
 					"sandbox_id", takeResult.SandboxID,
 					"policy", policy,
 					"error", renewErr)
+				go p.killSandboxBestEffort(takeResult.SandboxID)
 				_ = sb.Close()
 				go p.killDiscardedAliveSandboxes(pendingKill)
 				return nil, fmt.Errorf("opensandbox: pool acquire: renew after connect failed: %w", renewErr)

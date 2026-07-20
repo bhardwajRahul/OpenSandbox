@@ -607,18 +607,44 @@ def test_acquire_retry_next_idle_then_create_empty_falls_through_immediately() -
         pool.shutdown(False)
 
 
-def test_acquire_retry_next_idle_does_not_retry_when_renew_fails() -> None:
+def test_acquire_retry_next_idle_renew_failure_kills_remote_without_retrying() -> None:
     """Regression: renew failure against a healthy connected sandbox must NOT trigger the
-    retry loop to drain more idle candidates. Retrying another idle cannot fix a lifecycle-
-    API renew rejection.
+    retry loop to drain more idle candidates (retrying another idle cannot fix a lifecycle-
+    API renew rejection). But the connected sandbox MUST be killed on the remote side,
+    since try_take_idle already popped its id out of the pool store — otherwise it leaks
+    alive-but-untracked until its server-side TTL expires.
     """
-    FakeSandbox.reset()
-    FakeSandbox.fail_renew = True
+    connected: list[FakeSandbox] = []
+
+    class TrackingSandbox(FakeSandbox):
+        fail_renew_ids: bool = True  # class-level flag to survive reset()
+
+        @classmethod
+        def connect(cls, sandbox_id: str, *args: Any, **kwargs: Any) -> FakeSandbox:
+            sb = super().connect(sandbox_id, *args, **kwargs)
+            sb.fail_renew = True  # per-instance renew failure
+            connected.append(sb)
+            return sb
+
     store = InMemoryPoolStateStore()
     manager = FakeManager()
     for i in range(3):
         store.put_idle("pool", f"healthy-{i}")
-    pool = _create_pool(max_idle=0, store=store, manager=manager, max_acquire_retries=5)
+    pool = SandboxPoolSync(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=0,
+        warmup_concurrency=2,
+        state_store=store,
+        connection_config=ConnectionConfigSync(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        reconcile_interval=timedelta(milliseconds=20),
+        primary_lock_ttl=timedelta(seconds=5),
+        drain_timeout=timedelta(milliseconds=50),
+        max_acquire_retries=5,
+        sandbox_manager_factory=lambda config: manager,  # type: ignore[arg-type,return-value]
+        sandbox_factory=TrackingSandbox,  # type: ignore[arg-type]
+    )
     pool.start()
     try:
         with pytest.raises(RuntimeError, match="renew failed"):
@@ -626,14 +652,20 @@ def test_acquire_retry_next_idle_does_not_retry_when_renew_fails() -> None:
                 sandbox_timeout=timedelta(minutes=5),
                 policy=AcquirePolicy.RETRY_NEXT_IDLE,
             )
-        # Only ONE candidate was taken and connected. Renew failed, but the loop must NOT
-        # have advanced through the other two healthy idles.
+        # Only ONE candidate was connected — retry did NOT drain the other two healthy idles.
+        assert len(connected) == 1
         assert store.snapshot_counters("pool").idle_count == 2
-        # And the connected sandbox must NOT have been killed (still healthy from the
-        # pool's perspective — the only problem was renew, which is not candidate-specific).
+        # The connected sandbox was killed best-effort via sandbox.kill() so the remote
+        # resource does not leak (try_take_idle already popped its id from the store).
+        # Kill is direct on the Sandbox, not routed through the pool's SandboxManager, so
+        # FakeManager.killed stays empty; assert on the sandbox instance instead.
         assert manager.killed == []
+        assert connected[0].killed, (
+            "renew failure must trigger sandbox.kill() to release remote resources; "
+            "otherwise the sandbox leaks alive-but-untracked until server-side TTL expiry"
+        )
+        assert connected[0].closed
     finally:
-        FakeSandbox.fail_renew = False
         pool.shutdown(False)
 
 

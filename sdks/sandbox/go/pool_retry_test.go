@@ -422,9 +422,13 @@ func TestEffectiveMaxIdleAttempts(t *testing.T) {
 // renewFailingLifecycleServer accepts all sandbox ids as healthy on connect / endpoint fetch,
 // but returns 500 for POST /renew-expiration. Used to verify that a renew failure after a
 // successful connect does NOT trigger the retry loop to drain more healthy idles.
-func renewFailingLifecycleServer(t *testing.T, execdURL string) (*httptest.Server, *int32) {
+// Also records DELETE calls per-id so tests can assert the leaked-on-renew sandbox is killed
+// remotely, not merely closed locally.
+func renewFailingLifecycleServer(t *testing.T, execdURL string) (*httptest.Server, *int32, func() []string) {
 	t.Helper()
 	var renewAttempts int32
+	var deletedMu sync.Mutex
+	var deleted []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
@@ -450,6 +454,11 @@ func renewFailingLifecycleServer(t *testing.T, execdURL string) (*httptest.Serve
 				CreatedAt:  time.Now().UTC(),
 			})
 		case r.Method == http.MethodDelete && strings.HasPrefix(path, "/v1/sandboxes/"):
+			parts := strings.Split(path, "/")
+			sandboxID := parts[len(parts)-1]
+			deletedMu.Lock()
+			deleted = append(deleted, sandboxID)
+			deletedMu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodPost && strings.HasSuffix(path, "/renew-expiration"):
 			atomic.AddInt32(&renewAttempts, 1)
@@ -460,18 +469,28 @@ func renewFailingLifecycleServer(t *testing.T, execdURL string) (*httptest.Serve
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return srv, &renewAttempts
+	snapshotDeleted := func() []string {
+		deletedMu.Lock()
+		defer deletedMu.Unlock()
+		out := make([]string, len(deleted))
+		copy(out, deleted)
+		return out
+	}
+	return srv, &renewAttempts, snapshotDeleted
 }
 
-// Regression for the PR review point: a renew failure after a successful connect is NOT a
+// Regression for the PR review points: a renew failure after a successful connect is NOT a
 // candidate-specific problem. Retrying another idle cannot fix a lifecycle-API renew rejection
-// and used to drain healthy idle entries. Verify that:
+// and used to drain healthy idle entries. Also, since TryTakeIdle already popped the ID out of
+// the store, a bare Close() would leak the remote sandbox — Kill() must be called. Verify:
 //  1. Only ONE candidate is connected (no retry after renew failure).
 //  2. The remaining idle entries stay in the pool.
 //  3. The renew error surfaces to the caller (not wrapped as PoolAcquireFailedError).
-func TestPool_Acquire_RetryNextIdle_RenewFailure_DoesNotRetry(t *testing.T) {
+//  4. The connected sandbox is killed on the remote side to avoid leaking beyond pool
+//     accounting until server-side TTL expiry.
+func TestPool_Acquire_RetryNextIdle_RenewFailure_KillsRemoteAndDoesNotRetry(t *testing.T) {
 	execdSrv := newMockExecdServer(t)
-	lifecycleSrv, renewAttempts := renewFailingLifecycleServer(t, execdSrv.URL)
+	lifecycleSrv, renewAttempts, deletedIDs := renewFailingLifecycleServer(t, execdSrv.URL)
 
 	pool := newTestPool(t, lifecycleSrv.URL, func(b *SandboxPoolBuilder) {
 		b.MaxIdle(0)
@@ -523,6 +542,24 @@ func TestPool_Acquire_RetryNextIdle_RenewFailure_DoesNotRetry(t *testing.T) {
 	if snap.IdleCount != 2 {
 		t.Errorf("IdleCount = %d, want 2 (renew failure must not drain remaining idles)", snap.IdleCount)
 	}
+	// The connected-then-renew-failed sandbox must have been killed on the remote side, or it
+	// leaks alive-but-untracked until its server-side TTL expires. Kill runs async via a
+	// goroutine so poll briefly for exactly one healthy- DELETE to appear.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		ids := deletedIDs()
+		count := 0
+		for _, id := range ids {
+			if strings.HasPrefix(id, "healthy-") {
+				count++
+			}
+		}
+		if count == 1 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Errorf("expected exactly one healthy-* DELETE (renew-failed sandbox must be killed remotely); got %v", deletedIDs())
 }
 
 func TestPolicyFallsThroughToDirectCreate(t *testing.T) {
