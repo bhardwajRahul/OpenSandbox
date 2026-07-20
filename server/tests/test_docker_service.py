@@ -65,8 +65,10 @@ from opensandbox_server.api.schema import (
     CredentialProxyConfig,
     Host,
     ImageSpec,
+    ListSandboxesRequest,
     NetworkPolicy,
     OSSFS,
+    PaginationRequest,
     PlatformSpec,
     PVC,
     ResourceLimits,
@@ -3652,3 +3654,150 @@ def test_docker_get_endpoint_rejects_expires():
 
         assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
         assert "not supported" in exc.value.detail["message"].lower()
+
+
+# ============================================================================
+# list_sandboxes: race-safety and summary-view semantics
+# ============================================================================
+
+
+def _list_summary(
+    sandbox_id: str,
+    *,
+    state: str = "running",
+    labels: dict | None = None,
+    image: str = "python:3.11",
+) -> dict:
+    """Build the subset of a Docker low-level ``containers()`` summary that
+    ``_summary_to_sandbox`` reads."""
+    merged_labels = {SANDBOX_ID_LABEL: sandbox_id, **(labels or {})}
+    return {
+        "Id": f"cid-{sandbox_id}",
+        "Image": image,
+        "Created": int(datetime(2024, 1, 1, tzinfo=timezone.utc).timestamp()),
+        "Labels": merged_labels,
+        "State": state,
+    }
+
+
+@patch("opensandbox_server.services.docker.docker_service.docker")
+def test_list_sandboxes_uses_low_level_containers_and_skips_inspect(mock_docker):
+    """list_sandboxes must not depend on per-container ``attrs`` inspect."""
+    mock_client = MagicMock()
+    # Preserve _restore_existing_sandboxes' high-level list contract.
+    mock_client.containers.list.return_value = []
+    summary = _list_summary("sbx-1", state="running")
+    mock_client.api.containers.return_value = [summary]
+    mock_docker.from_env.return_value = mock_client
+
+    service = DockerSandboxService(config=_app_config())
+
+    response = service.list_sandboxes(
+        ListSandboxesRequest(pagination=PaginationRequest(page=1, page_size=50))
+    )
+
+    # Uses the low-level Docker Engine endpoint with the sandbox-id label filter.
+    call_kwargs = mock_client.api.containers.call_args.kwargs
+    assert call_kwargs["all"] is True
+    assert call_kwargs["filters"] == {"label": [SANDBOX_ID_LABEL]}
+
+    assert response.pagination.total_items == 1
+    item = response.items[0]
+    assert item.id == "sbx-1"
+    assert item.status.state == "Running"
+    # List view intentionally returns empty entrypoint (spec-compatible fallback).
+    assert item.entrypoint == []
+    assert item.image is not None
+    assert item.image.uri == "python:3.11"
+
+
+@patch("opensandbox_server.services.docker.docker_service.docker")
+def test_list_sandboxes_survives_concurrent_container_deletion(mock_docker):
+    """Regression: exited containers reported by summary must not require a
+    follow-up inspect. The previous implementation used ``containers.list``,
+    which internally inspects every matched container; a container removed
+    mid-listing turned the whole request into a 500.
+    """
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_client.api.containers.return_value = [
+        _list_summary("sbx-alive", state="running"),
+        _list_summary("sbx-gone", state="exited"),
+    ]
+    mock_docker.from_env.return_value = mock_client
+
+    service = DockerSandboxService(config=_app_config())
+
+    response = service.list_sandboxes(
+        ListSandboxesRequest(pagination=PaginationRequest(page=1, page_size=50))
+    )
+
+    states = {item.id: item.status.state for item in response.items}
+    # Summary lacks ExitCode; exited/dead always map to Terminated.
+    assert states == {"sbx-alive": "Running", "sbx-gone": "Terminated"}
+
+
+@patch("opensandbox_server.services.docker.docker_service.docker")
+def test_list_sandboxes_summary_state_mappings(mock_docker):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_client.api.containers.return_value = [
+        _list_summary("sbx-running", state="running"),
+        _list_summary("sbx-paused", state="paused"),
+        _list_summary("sbx-restarting", state="restarting"),
+        _list_summary("sbx-created", state="created"),
+        _list_summary("sbx-exited", state="exited"),
+        _list_summary("sbx-dead", state="dead"),
+    ]
+    mock_docker.from_env.return_value = mock_client
+
+    service = DockerSandboxService(config=_app_config())
+    response = service.list_sandboxes(ListSandboxesRequest(pagination=PaginationRequest(page=1, page_size=50)))
+
+    got = {item.id: (item.status.state, item.status.reason) for item in response.items}
+    assert got == {
+        "sbx-running": ("Running", "CONTAINER_RUNNING"),
+        "sbx-paused": ("Paused", "CONTAINER_PAUSED"),
+        "sbx-restarting": ("Running", "CONTAINER_RESTARTING"),
+        "sbx-created": ("Pending", "CONTAINER_STARTING"),
+        "sbx-exited": ("Terminated", "CONTAINER_EXITED"),
+        "sbx-dead": ("Terminated", "CONTAINER_EXITED"),
+    }
+
+
+@patch("opensandbox_server.services.docker.docker_service.docker")
+def test_list_sandboxes_wraps_docker_exception(mock_docker):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_client.api.containers.side_effect = DockerException("boom")
+    mock_docker.from_env.return_value = mock_client
+
+    service = DockerSandboxService(config=_app_config())
+
+    with pytest.raises(HTTPException) as exc:
+        service.list_sandboxes(ListSandboxesRequest(pagination=PaginationRequest(page=1, page_size=50)))
+
+    assert exc.value.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    assert exc.value.detail["code"] == SandboxErrorCodes.CONTAINER_QUERY_FAILED
+
+
+@patch("opensandbox_server.services.docker.docker_service.docker")
+def test_get_container_by_sandbox_id_maps_notfound_to_404(mock_docker):
+    """Concurrent deletion of a single container must yield 404, not 500.
+
+    docker-py's ``containers.list`` performs a follow-up inspect per matched
+    entry; when the container disappears mid-inspect, docker-py raises
+    ``NotFound``. The service must translate this into SANDBOX_NOT_FOUND (404)
+    to match the semantics callers expect when a sandbox has been removed.
+    """
+    mock_client = MagicMock()
+    mock_client.containers.list.side_effect = DockerNotFound("no such container")
+    mock_docker.from_env.return_value = mock_client
+
+    service = DockerSandboxService(config=_app_config())
+
+    with pytest.raises(HTTPException) as exc:
+        service._get_container_by_sandbox_id("sbx-vanished")
+
+    assert exc.value.status_code == status.HTTP_404_NOT_FOUND
+    assert exc.value.detail["code"] == SandboxErrorCodes.SANDBOX_NOT_FOUND
