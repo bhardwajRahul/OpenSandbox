@@ -96,6 +96,7 @@ export default defineConfig({
             { text: "Isolation Sessions", link: "/guides/isolation-sessions" },
             { text: "Pause & Resume", link: "/guides/pause-resume" },
             { text: "Windows Sandbox", link: "/guides/windows-sandbox" },
+            { text: "Client Pool", link: "/guides/client-pool" },
             { text: "SDK Telemetry", link: "/guides/sdk-telemetry" },
           ],
         },
