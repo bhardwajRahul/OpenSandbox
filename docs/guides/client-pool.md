@@ -129,11 +129,11 @@ canonical reference; refer to the per-language builder or constructor for exact 
   `DIRECT_CREATE` fallbacks.
 - All nodes sharing one pool must use the same creation and warmup definition. If that
   definition changes, roll out under a **new** `pool_name` (or Redis `key_prefix`) and
-  retire the old pool with `SandboxPoolManager.destroy(...)`. Do not attempt to refill
-  a changed template into the same `pool_name`: `release_all_idle()` does not fence
-  other nodes, does not lower `max_idle`, and does not stop any current leader (which
-  may still be running the old code) from immediately re-publishing old-template
-  sandbox IDs into the shared buffer during a rolling deploy.
+  retire the old one (see "Retiring an old pool namespace" below). Do not attempt to
+  refill a changed template into the same `pool_name`: `release_all_idle()` does not
+  fence other nodes, does not lower `max_idle`, and does not stop any current leader
+  (which may still be running the old code) from immediately re-publishing
+  old-template sandbox IDs into the shared buffer during a rolling deploy.
 - `resize(max_idle)` and `release_all_idle()` can be called from any node.
 
 ## Minimal usage
@@ -285,13 +285,45 @@ Every SDK exposes read-only accessors:
   transient upstream problem. It does **not** change `max_idle`, does **not** fence
   other nodes, and does **not** stop an active leader from immediately replenishing —
   so it is not a safe way to swap creation templates on the same `pool_name`. For that
-  case, roll out under a new `pool_name` and use `SandboxPoolManager.destroy(...)` on
-  the old one.
+  case, retire the whole namespace under a new `pool_name` (see below).
 
-For destructive administrative operations across a whole distributed pool (fence,
-drain, clear-state, tombstone), use `SandboxPoolManager.destroy(poolName)` (Kotlin,
-Python). The manager applies a `DESTROYING → DESTROYED` protocol so an old pool
-namespace cannot be silently recreated.
+### Retiring an old pool namespace
+
+The retirement procedure differs across SDKs because Go does not currently ship a
+`SandboxPoolManager` or the destroy / tombstone primitives that Python and Kotlin
+have.
+
+**Python / Kotlin** — use `SandboxPoolManager.destroy(poolName, options)`. The manager
+applies a full `DESTROYING → DESTROYED` protocol: write a `DESTROYING` fence into the
+state store (so any still-running peer instance sees it), best-effort drain and kill
+every idle sandbox up to `drain_timeout`, clear the persistent per-pool state, then
+write a `DESTROYED` tombstone with `tombstone_ttl` (default 7 days) so future callers
+cannot silently rebind to the same `pool_name`.
+
+**Go** — the Go SDK has no equivalent API and no state-store primitives for
+tombstones or fences. The closest safe approximation is an operator-driven, out-of-band
+sequence:
+
+1. Stop every process that instantiates a pool against the old `pool_name`. Call
+   `pool.Shutdown(ctx, true)` on each. This releases each node's primary lock but
+   leaves idle entries in the store.
+2. From one still-alive pool instance (or a throwaway one bound to the same
+   `PoolName` + `StateStore`), call `pool.ReleaseAllIdle(ctx)` to drain and
+   best-effort kill every idle sandbox.
+3. Set `store.SetMaxIdle(ctx, poolName, 0)` so any peer that races back in cannot
+   warm up new sandboxes.
+4. Move all future callers to a new `PoolName` (for example
+   `orders-v2` → `orders-v3`). This is the Go substitute for the `DESTROYED`
+   tombstone: without a shared marker, name rotation is the only way to guarantee no
+   accidental reuse.
+5. If you are using the Redis store and want to reclaim keys, delete them directly
+   with `DEL` / `SCAN` against your Redis instance — the Go SDK does not expose a
+   destroy helper for this.
+
+Without a fence, steps 2 and 3 race with any surviving peer that has not yet been
+stopped. If you cannot guarantee "all writers stopped" before step 2, the only correct
+option is to rotate `PoolName` first (step 4) and let the old namespace's idle entries
+expire naturally via `idle_timeout`.
 
 ## Further reading
 
