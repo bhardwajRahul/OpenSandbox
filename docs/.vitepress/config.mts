@@ -91,6 +91,7 @@ export default defineConfig({
           text: "Guides",
           items: [
             { text: "Credential Vault", link: "/guides/credential-vault" },
+            { text: "Secure Access", link: "/guides/secure-access" },
             { text: "Secure Container", link: "/guides/secure-container" },
             { text: "Multi-Tenancy", link: "/guides/multi-tenancy" },
             { text: "Pause & Resume", link: "/guides/pause-resume" },
