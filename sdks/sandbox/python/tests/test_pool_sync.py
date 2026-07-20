@@ -669,6 +669,74 @@ def test_acquire_retry_next_idle_renew_failure_kills_remote_without_retrying() -
         pool.shutdown(False)
 
 
+def test_acquire_retry_next_idle_then_create_falls_through_on_state_store_outage() -> (
+    None
+):
+    """Regression: PoolStateStoreUnavailableException during try_take_idle must degrade to
+    direct-create under RETRY_NEXT_IDLE_THEN_CREATE (and DIRECT_CREATE), per OSEP-0005.
+    Previously the exception propagated and skipped the fallback branch, making the new
+    then-create policy strictly less available than documented during store outages.
+    """
+    from opensandbox.exceptions import PoolStateStoreUnavailableException
+
+    FakeSandbox.reset()
+
+    class OutageStore(InMemoryPoolStateStore):
+        def try_take_idle(self, pool_name: str) -> str | None:
+            raise PoolStateStoreUnavailableException(
+                "TryTakeIdle", RuntimeError("redis unavailable")
+            )
+
+        # Override the min-ttl variant too, since the pool prefers it when
+        # acquire_min_remaining_ttl > 0 (which is the default).
+        def try_take_idle_min_ttl(  # type: ignore[override]
+            self, pool_name: str, min_remaining_ttl: object
+        ) -> object:
+            raise PoolStateStoreUnavailableException(
+                "TryTakeIdleWithMinTTL", RuntimeError("redis unavailable")
+            )
+
+    store = OutageStore()
+    pool = _create_pool(max_idle=0, store=store)
+    pool.start()
+    try:
+        sandbox = pool.acquire(policy=AcquirePolicy.RETRY_NEXT_IDLE_THEN_CREATE)
+        # Fell through to direct create.
+        assert sandbox.id.startswith("created-")
+    finally:
+        pool.shutdown(False)
+
+
+def test_acquire_retry_next_idle_raises_on_state_store_outage() -> None:
+    """Complement of the fallthrough test: RETRY_NEXT_IDLE (no _THEN_CREATE) must surface
+    the state store outage instead of silently direct-creating. Same guarantee applies to
+    FAIL_FAST — non-fallthrough policies never degrade to direct-create.
+    """
+    from opensandbox.exceptions import PoolStateStoreUnavailableException
+
+    class OutageStore(InMemoryPoolStateStore):
+        def try_take_idle(self, pool_name: str) -> str | None:
+            raise PoolStateStoreUnavailableException(
+                "TryTakeIdle", RuntimeError("redis unavailable")
+            )
+
+        def try_take_idle_min_ttl(  # type: ignore[override]
+            self, pool_name: str, min_remaining_ttl: object
+        ) -> object:
+            raise PoolStateStoreUnavailableException(
+                "TryTakeIdleWithMinTTL", RuntimeError("redis unavailable")
+            )
+
+    store = OutageStore()
+    pool = _create_pool(max_idle=0, store=store)
+    pool.start()
+    try:
+        with pytest.raises(PoolStateStoreUnavailableException):
+            pool.acquire(policy=AcquirePolicy.RETRY_NEXT_IDLE)
+    finally:
+        pool.shutdown(False)
+
+
 def test_pool_config_rejects_max_acquire_retries_below_one() -> None:
     with pytest.raises(ValueError, match="max_acquire_retries must be >= 1"):
         PoolConfig(

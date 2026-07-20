@@ -23,6 +23,7 @@ import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolAcquireFailedExcept
 import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolDestroyedException
 import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolEmptyException
 import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolNotRunningException
+import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolStateStoreUnavailableException
 import com.alibaba.opensandbox.sandbox.domain.pool.AcquirePolicy
 import com.alibaba.opensandbox.sandbox.domain.pool.IdleEntry
 import com.alibaba.opensandbox.sandbox.domain.pool.PoolConfig
@@ -235,7 +236,28 @@ class SandboxPool internal constructor(
             var loopExhausted = true
             while (attempt < maxAttempts) {
                 attempt++
-                val takeResult = stateStore.tryTakeIdle(poolName, config.acquireMinRemainingTtl)
+                val takeResult =
+                    try {
+                        stateStore.tryTakeIdle(poolName, config.acquireMinRemainingTtl)
+                    } catch (e: PoolStateStoreUnavailableException) {
+                        // State store outage. Per OSEP-0005, under policies that fall through to
+                        // direct-create on empty idle we degrade to that fallback so the pool
+                        // stays at least as available as raw SDK usage during store outages.
+                        // Under non-fallthrough policies (FAIL_FAST / RETRY_NEXT_IDLE) we surface
+                        // the outage as-is so callers can react.
+                        if (!policyFallsThroughToDirectCreate(policy)) {
+                            scheduleKillDiscardedAlive(poolName, pendingKill, source = "acquire")
+                            throw e
+                        }
+                        logger.warn(
+                            "Acquire: state store unavailable, falling through to direct create " +
+                                "per policy={} error={}",
+                            policy,
+                            e.message,
+                        )
+                        loopExhausted = false
+                        break
+                    }
                 if (takeResult.discardedAliveSandboxIds.isNotEmpty()) {
                     pendingKill.addAll(takeResult.discardedAliveSandboxIds)
                 }
@@ -367,9 +389,7 @@ class SandboxPool internal constructor(
                         "idle connect failed for sandbox_id=$lastSandboxId; idle buffer drained " +
                             "before reaching maxAcquireRetries=$maxAttempts"
                 }
-            val shouldFallThrough =
-                policy == AcquirePolicy.DIRECT_CREATE || policy == AcquirePolicy.RETRY_NEXT_IDLE_THEN_CREATE
-            if (!shouldFallThrough) {
+            if (!policyFallsThroughToDirectCreate(policy)) {
                 logger.debug("Acquire no-fallback: pool_name={} policy={} reason={}", poolName, policy, reason)
                 if (attemptedAny) {
                     throw PoolAcquireFailedException(
@@ -399,6 +419,14 @@ class SandboxPool internal constructor(
             AcquirePolicy.RETRY_NEXT_IDLE, AcquirePolicy.RETRY_NEXT_IDLE_THEN_CREATE ->
                 config.maxAcquireRetries.coerceAtLeast(1)
         }
+
+    /**
+     * Returns whether [policy], after exhausting its idle budget (or on state-store outage),
+     * should silently create a fresh sandbox instead of throwing. Mirrors the equivalent Go /
+     * Python helpers so the three SDKs share one fallthrough classification.
+     */
+    private fun policyFallsThroughToDirectCreate(policy: AcquirePolicy): Boolean =
+        policy == AcquirePolicy.DIRECT_CREATE || policy == AcquirePolicy.RETRY_NEXT_IDLE_THEN_CREATE
 
     /**
      * Updates the maximum idle target. In distributed mode the new value is written to the store

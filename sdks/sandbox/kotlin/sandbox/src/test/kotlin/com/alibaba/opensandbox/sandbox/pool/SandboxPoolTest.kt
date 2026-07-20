@@ -349,6 +349,68 @@ class SandboxPoolTest {
     }
 
     @Test
+    fun `acquire with RETRY_NEXT_IDLE_THEN_CREATE falls through on state store outage`() {
+        // Regression: PoolStateStoreUnavailableException during tryTakeIdle must degrade to
+        // direct-create under RETRY_NEXT_IDLE_THEN_CREATE (and DIRECT_CREATE), per OSEP-0005.
+        // Previously the exception propagated and skipped the fallback branch, making the new
+        // then-create policy strictly less available than documented during store outages.
+        val createdSandbox = mockk<Sandbox>(relaxed = true)
+        every { createdSandbox.id } returns "created-fallback"
+        val creator = PooledSandboxCreator { createdSandbox }
+        val store = OutageStore()
+
+        val pool =
+            SandboxPool.builder()
+                .poolName("test-pool")
+                .ownerId("test-owner")
+                .maxIdle(0)
+                .stateStore(store)
+                .connectionConfig(ConnectionConfig.builder().build())
+                .creationSpec(PoolCreationSpec.builder().image("ubuntu:22.04").build())
+                .sandboxCreator(creator)
+                .drainTimeout(Duration.ofMillis(50))
+                .reconcileInterval(Duration.ofSeconds(30))
+                .build()
+
+        pool.start()
+        try {
+            val sandbox = pool.acquire(policy = AcquirePolicy.RETRY_NEXT_IDLE_THEN_CREATE)
+            assertSame(createdSandbox, sandbox)
+        } finally {
+            pool.shutdown(graceful = false)
+        }
+    }
+
+    @Test
+    fun `acquire with RETRY_NEXT_IDLE surfaces state store outage`() {
+        // Complement: non-fallthrough policies (FAIL_FAST / RETRY_NEXT_IDLE) must NOT degrade
+        // to direct-create on store outage; they must surface the exception so callers can react.
+        val store = OutageStore()
+        val pool =
+            SandboxPool.builder()
+                .poolName("test-pool")
+                .ownerId("test-owner")
+                .maxIdle(0)
+                .stateStore(store)
+                .connectionConfig(ConnectionConfig.builder().build())
+                .creationSpec(PoolCreationSpec.builder().image("ubuntu:22.04").build())
+                .drainTimeout(Duration.ofMillis(50))
+                .reconcileInterval(Duration.ofSeconds(30))
+                .build()
+
+        pool.start()
+        try {
+            assertThrows(
+                com.alibaba.opensandbox.sandbox.domain.exceptions.PoolStateStoreUnavailableException::class.java,
+            ) {
+                pool.acquire(policy = AcquirePolicy.RETRY_NEXT_IDLE)
+            }
+        } finally {
+            pool.shutdown(graceful = false)
+        }
+    }
+
+    @Test
     fun `PoolConfig rejects maxAcquireRetries below 1`() {
         val ex =
             assertThrows(IllegalArgumentException::class.java) {
@@ -795,6 +857,72 @@ class SandboxPoolTest {
         val field = target.javaClass.getDeclaredField(fieldName)
         field.isAccessible = true
         field.set(target, value)
+    }
+
+    /**
+     * Store that raises [PoolStateStoreUnavailableException] from every take call. Used to
+     * exercise the state-store-outage fallback path in acquire.
+     */
+    private class OutageStore : PoolStateStore {
+        override fun tryTakeIdle(poolName: String): String? {
+            throw com.alibaba.opensandbox.sandbox.domain.exceptions.PoolStateStoreUnavailableException(
+                "tryTakeIdle",
+                RuntimeException("redis unavailable"),
+            )
+        }
+
+        override fun tryTakeIdle(
+            poolName: String,
+            minRemainingTtl: Duration,
+        ): com.alibaba.opensandbox.sandbox.domain.pool.TakeIdleResult {
+            throw com.alibaba.opensandbox.sandbox.domain.exceptions.PoolStateStoreUnavailableException(
+                "tryTakeIdleWithMinTtl",
+                RuntimeException("redis unavailable"),
+            )
+        }
+
+        override fun putIdle(
+            poolName: String,
+            sandboxId: String,
+        ) {}
+
+        override fun removeIdle(
+            poolName: String,
+            sandboxId: String,
+        ) {}
+
+        override fun tryAcquirePrimaryLock(
+            poolName: String,
+            ownerId: String,
+            ttl: Duration,
+        ): Boolean = true
+
+        override fun renewPrimaryLock(
+            poolName: String,
+            ownerId: String,
+            ttl: Duration,
+        ): Boolean = true
+
+        override fun releasePrimaryLock(
+            poolName: String,
+            ownerId: String,
+        ) {}
+
+        override fun reapExpiredIdle(
+            poolName: String,
+            now: Instant,
+        ) {}
+
+        override fun snapshotCounters(poolName: String): StoreCounters = StoreCounters(idleCount = 0)
+
+        override fun snapshotIdleEntries(poolName: String): List<IdleEntry> = emptyList()
+
+        override fun getMaxIdle(poolName: String): Int? = null
+
+        override fun setMaxIdle(
+            poolName: String,
+            maxIdle: Int,
+        ) {}
     }
 
     private class RecordingPoolStateStore(

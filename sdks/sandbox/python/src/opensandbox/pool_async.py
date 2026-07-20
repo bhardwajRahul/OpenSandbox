@@ -31,6 +31,7 @@ from opensandbox.exceptions import (
     PoolDestroyedException,
     PoolEmptyException,
     PoolNotRunningException,
+    PoolStateStoreUnavailableException,
 )
 from opensandbox.manager import SandboxManager
 from opensandbox.pool_types import (
@@ -201,11 +202,28 @@ class SandboxPoolAsync:
             attempt = 0
             while attempt < max_attempts:
                 attempt += 1
-                take_result = await _try_take_idle_with_min_ttl_async(
-                    self._state_store,
-                    pool_name,
-                    self._config.acquire_min_remaining_ttl,
-                )
+                try:
+                    take_result = await _try_take_idle_with_min_ttl_async(
+                        self._state_store,
+                        pool_name,
+                        self._config.acquire_min_remaining_ttl,
+                    )
+                except PoolStateStoreUnavailableException:
+                    # State store outage. Per OSEP-0005, under policies that fall through to
+                    # direct-create on empty idle we degrade to that fallback so the pool stays
+                    # at least as available as raw SDK usage during store outages.
+                    if not policy_falls_through_to_direct_create(policy):
+                        self._schedule_kill_discarded_alive(
+                            pool_name, tuple(pending_kill), source="acquire"
+                        )
+                        raise
+                    logger.warning(
+                        "acquire: state store unavailable, falling through to direct create "
+                        "per policy=%s",
+                        policy.value,
+                    )
+                    loop_exhausted = False
+                    break
                 if take_result.discarded_alive_sandbox_ids:
                     pending_kill.extend(take_result.discarded_alive_sandbox_ids)
                 sandbox_id = take_result.sandbox_id
@@ -290,8 +308,16 @@ class SandboxPoolAsync:
                         )
                     try:
                         await sandbox.close()
-                    except Exception:
-                        pass
+                    except Exception as close_exc:
+                        # Best-effort local resource release; original renew error must be the
+                        # one that surfaces, so log at debug and continue with the raise below.
+                        logger.debug(
+                            "Best-effort close after renew failure failed: "
+                            "pool_name=%s sandbox_id=%s error=%s",
+                            pool_name,
+                            sandbox_id,
+                            close_exc,
+                        )
                     self._schedule_kill_discarded_alive(
                         pool_name, tuple(pending_kill), source="acquire"
                     )

@@ -672,6 +672,65 @@ async def test_async_acquire_retry_next_idle_renew_failure_kills_remote_without_
         await pool.shutdown(False)
 
 
+async def test_async_acquire_retry_next_idle_then_create_falls_through_on_state_store_outage() -> (
+    None
+):
+    """Regression: PoolStateStoreUnavailableException during try_take_idle must degrade to
+    direct-create under RETRY_NEXT_IDLE_THEN_CREATE (per OSEP-0005).
+    """
+    from opensandbox.exceptions import PoolStateStoreUnavailableException
+
+    FakeAsyncSandbox.reset()
+
+    class OutageStore(InMemoryAsyncPoolStateStore):
+        async def try_take_idle(self, pool_name: str) -> str | None:
+            raise PoolStateStoreUnavailableException(
+                "TryTakeIdle", RuntimeError("redis unavailable")
+            )
+
+        async def try_take_idle_min_ttl(  # type: ignore[override]
+            self, pool_name: str, min_remaining_ttl: object
+        ) -> object:
+            raise PoolStateStoreUnavailableException(
+                "TryTakeIdleWithMinTTL", RuntimeError("redis unavailable")
+            )
+
+    store = OutageStore()
+    pool = _create_pool(max_idle=0, store=store)
+    await pool.start()
+    try:
+        sandbox = await pool.acquire(policy=AcquirePolicy.RETRY_NEXT_IDLE_THEN_CREATE)
+        assert sandbox.id.startswith("created-")
+    finally:
+        await pool.shutdown(False)
+
+
+async def test_async_acquire_retry_next_idle_raises_on_state_store_outage() -> None:
+    from opensandbox.exceptions import PoolStateStoreUnavailableException
+
+    class OutageStore(InMemoryAsyncPoolStateStore):
+        async def try_take_idle(self, pool_name: str) -> str | None:
+            raise PoolStateStoreUnavailableException(
+                "TryTakeIdle", RuntimeError("redis unavailable")
+            )
+
+        async def try_take_idle_min_ttl(  # type: ignore[override]
+            self, pool_name: str, min_remaining_ttl: object
+        ) -> object:
+            raise PoolStateStoreUnavailableException(
+                "TryTakeIdleWithMinTTL", RuntimeError("redis unavailable")
+            )
+
+    store = OutageStore()
+    pool = _create_pool(max_idle=0, store=store)
+    await pool.start()
+    try:
+        with pytest.raises(PoolStateStoreUnavailableException):
+            await pool.acquire(policy=AcquirePolicy.RETRY_NEXT_IDLE)
+    finally:
+        await pool.shutdown(False)
+
+
 async def test_async_pool_config_rejects_max_acquire_retries_below_one() -> None:
     from opensandbox.pool_types import AsyncPoolConfig
 
