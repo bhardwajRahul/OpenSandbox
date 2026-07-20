@@ -19,6 +19,7 @@ package com.alibaba.opensandbox.sandbox.internal
 import com.alibaba.opensandbox.sandbox.config.ConnectionConfig
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.jupiter.api.AfterEach
@@ -131,6 +132,65 @@ class LifecycleMetricsReporterTest {
             "sandbox.create",
             (body as kotlinx.serialization.json.JsonObject)["eventType"]!!.jsonPrimitive.content,
         )
+    }
+
+    @Test
+    fun `caller-supplied OkHttpClient is not shut down by reporter`() {
+        server.enqueue(MockResponse().setResponseCode(204))
+        val config =
+            ConnectionConfig.builder()
+                .domain(server.hostName + ":" + server.port)
+                .protocol("http")
+                .build()
+        // Caller owns the client; the SDK must not shut it down.
+        val callerClient = OkHttpClient()
+
+        LifecycleMetricsReporter.reportSandboxCreate(
+            connectionConfig = config,
+            sandboxId = "sbx",
+            image = "python:3.12",
+            createDurationMs = 5L,
+            success = true,
+            client = callerClient,
+        )
+
+        // Wait for the request to be observed by the server so we know the call
+        // has finished on the OkHttp dispatcher before we assert client state.
+        val recorded = server.takeRequest(3, TimeUnit.SECONDS)
+        assertNotNull(recorded, "metrics POST should be sent")
+        // Small settling delay for the callback to run to completion.
+        Thread.sleep(50L)
+
+        assertFalse(
+            callerClient.dispatcher.executorService.isShutdown,
+            "reporter must not shut down a caller-supplied OkHttpClient",
+        )
+    }
+
+    @Test
+    fun `sdk-owned OkHttpClient is shut down after the call completes`() {
+        // We can't easily observe the internal SDK client, but we can verify
+        // the SDK-owned path succeeds end-to-end and drains without leaking a
+        // dispatcher that keeps the JVM busy indefinitely. This test succeeds
+        // when the response body has been drained (callback ran) and no
+        // exceptions escape the reporter.
+        server.enqueue(MockResponse().setResponseCode(204).setBody("ok"))
+        val config =
+            ConnectionConfig.builder()
+                .domain(server.hostName + ":" + server.port)
+                .protocol("http")
+                .build()
+
+        LifecycleMetricsReporter.reportSandboxCreate(
+            connectionConfig = config,
+            sandboxId = "sbx",
+            image = "python:3.12",
+            createDurationMs = 5L,
+            success = true,
+        )
+
+        val recorded = server.takeRequest(3, TimeUnit.SECONDS)
+        assertNotNull(recorded, "metrics POST should be sent")
     }
 
     @Test

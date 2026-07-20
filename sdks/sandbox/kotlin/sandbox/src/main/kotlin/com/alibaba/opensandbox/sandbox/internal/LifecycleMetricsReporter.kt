@@ -93,7 +93,20 @@ internal object LifecycleMetricsReporter {
             }
         }
 
-        val effectiveClient = client ?: defaultClient(connectionConfig)
+        // When the caller supplies an OkHttpClient, they own its lifecycle. Otherwise
+        // we create a client for this single fire-and-forget request and tear it down
+        // in the callback so that high-churn create paths (e.g. SandboxPool prewarm)
+        // do not accumulate OkHttp dispatcher threads or idle connections.
+        val effectiveClient: OkHttpClient
+        val sdkOwnsClient: Boolean
+        if (client != null) {
+            effectiveClient = client
+            sdkOwnsClient = false
+        } else {
+            effectiveClient = defaultClient(connectionConfig)
+            sdkOwnsClient = true
+        }
+
         try {
             effectiveClient.newCall(requestBuilder.build()).enqueue(
                 object : Callback {
@@ -101,21 +114,49 @@ internal object LifecycleMetricsReporter {
                         call: Call,
                         e: IOException,
                     ) {
-                        logger.debug("Failed to report sandbox.create metrics: {}", e.message)
+                        try {
+                            logger.debug("Failed to report sandbox.create metrics: {}", e.message)
+                        } finally {
+                            if (sdkOwnsClient) shutdownQuietly(effectiveClient)
+                        }
                     }
 
                     override fun onResponse(
                         call: Call,
                         response: Response,
                     ) {
-                        // Drain and close to release the connection back to the pool.
-                        response.use { it.body?.string() }
+                        try {
+                            // Drain and close to release the connection back to the pool.
+                            response.use { it.body?.string() }
+                        } catch (_: Exception) {
+                            // ignore — best effort
+                        } finally {
+                            if (sdkOwnsClient) shutdownQuietly(effectiveClient)
+                        }
                     }
                 },
             )
         } catch (e: Exception) {
             // Never let telemetry disrupt the caller.
             logger.debug("Failed to enqueue sandbox.create metrics request: {}", e.message)
+            if (sdkOwnsClient) shutdownQuietly(effectiveClient)
+        }
+    }
+
+    /**
+     * Shuts down an SDK-owned OkHttpClient created solely for a single
+     * telemetry request. Never throws.
+     */
+    private fun shutdownQuietly(client: OkHttpClient) {
+        try {
+            client.dispatcher.executorService.shutdown()
+        } catch (_: Exception) {
+            // ignore
+        }
+        try {
+            client.connectionPool.evictAll()
+        } catch (_: Exception) {
+            // ignore
         }
     }
 
