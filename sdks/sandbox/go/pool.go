@@ -264,38 +264,55 @@ func (p *DefaultSandboxPool) Acquire(ctx context.Context, opts AcquireOptions) (
 		attemptedAny = true
 
 		// Try to connect to the idle sandbox (health check is integrated into ready-poll).
-		sb, connectErr := p.connectAndRenew(ctx, takeResult.SandboxID, opts)
-		if connectErr == nil {
-			// Connected and healthy — return it.
-			go p.killDiscardedAliveSandboxes(pendingKill)
-			p.config.Logger.Debug("acquire: from idle",
+		sb, connectErr := p.connectIdle(ctx, takeResult.SandboxID, opts)
+		if connectErr != nil {
+			// Connect / readiness / health-check failed — the idle candidate itself is unusable.
+			// Remove it, best-effort kill, then either retry (RetryNextIdle*) or fall through
+			// (single-shot policies).
+			lastIdleAttemptErr = connectErr
+			_ = p.config.StateStore.RemoveIdle(ctx, p.config.PoolName, takeResult.SandboxID)
+			go p.killSandboxBestEffort(takeResult.SandboxID)
+			p.config.Logger.Warn("acquire: idle sandbox connect/health check failed",
 				"pool_name", p.config.PoolName,
 				"sandbox_id", takeResult.SandboxID,
 				"policy", policy,
 				"attempt", attempt,
-				"max_attempts", maxAttempts)
-			return sb, nil
-		}
+				"max_attempts", maxAttempts,
+				"error", connectErr)
 
-		// Connect or health check failed — remove the ID, best-effort kill, then either retry
-		// (RetryNextIdle*) or fall through (single-shot policies).
-		lastIdleAttemptErr = connectErr
-		_ = p.config.StateStore.RemoveIdle(ctx, p.config.PoolName, takeResult.SandboxID)
-		go p.killSandboxBestEffort(takeResult.SandboxID)
-		p.config.Logger.Warn("acquire: idle sandbox connect/health check failed",
+			// Respect the caller's cancellation between iterations so a long retry loop doesn't
+			// keep paying AcquireReadyTimeout after the context has been cancelled.
+			if err := ctx.Err(); err != nil {
+				go p.killDiscardedAliveSandboxes(pendingKill)
+				return nil, &PoolAcquireFailedError{PoolName: p.config.PoolName, Cause: err}
+			}
+			continue
+		}
+		// Connect + readiness succeeded. From here on the sandbox is a healthy, borrowable idle:
+		// any failure below (renew rejection, e.g. lifecycle API temporarily failing renew) is
+		// NOT a candidate-specific problem, so we must not treat it as "stale idle" and burn
+		// another retry. Close the just-connected sandbox best-effort and surface the error.
+		if opts.SandboxTimeout > 0 {
+			if _, renewErr := sb.Renew(ctx, opts.SandboxTimeout); renewErr != nil {
+				p.config.Logger.Warn("acquire: renew failed after idle connect; not retrying "+
+					"(renew errors are not candidate-specific)",
+					"pool_name", p.config.PoolName,
+					"sandbox_id", takeResult.SandboxID,
+					"policy", policy,
+					"error", renewErr)
+				_ = sb.Close()
+				go p.killDiscardedAliveSandboxes(pendingKill)
+				return nil, fmt.Errorf("opensandbox: pool acquire: renew after connect failed: %w", renewErr)
+			}
+		}
+		go p.killDiscardedAliveSandboxes(pendingKill)
+		p.config.Logger.Debug("acquire: from idle",
 			"pool_name", p.config.PoolName,
 			"sandbox_id", takeResult.SandboxID,
 			"policy", policy,
 			"attempt", attempt,
-			"max_attempts", maxAttempts,
-			"error", connectErr)
-
-		// Respect the caller's cancellation between iterations so a long retry loop doesn't keep
-		// paying AcquireReadyTimeout after the context has been cancelled.
-		if err := ctx.Err(); err != nil {
-			go p.killDiscardedAliveSandboxes(pendingKill)
-			return nil, &PoolAcquireFailedError{PoolName: p.config.PoolName, Cause: err}
-		}
+			"max_attempts", maxAttempts)
+		return sb, nil
 	}
 
 	// Reached end of loop without a successful acquire. Fire deferred cleanup asynchronously
@@ -357,28 +374,19 @@ func policyFallsThroughToDirectCreate(policy AcquirePolicy) bool {
 	}
 }
 
-func (p *DefaultSandboxPool) connectAndRenew(ctx context.Context, sandboxID string, opts AcquireOptions) (*Sandbox, error) {
-	var sb *Sandbox
-	var err error
+// connectIdle connects to an existing idle sandbox and waits for readiness (health check is
+// integrated into the ready-poll). Deliberately does NOT call Renew: the caller must decide
+// whether a renew failure should tear down the sandbox and retry (never — renew errors are
+// not candidate-specific) or bubble up as a non-retryable acquire failure.
+func (p *DefaultSandboxPool) connectIdle(ctx context.Context, sandboxID string, opts AcquireOptions) (*Sandbox, error) {
 	if opts.SkipHealthCheck {
-		sb, err = ConnectSandbox(ctx, p.config.ConnectionConfig, sandboxID)
-	} else {
-		sb, err = ConnectSandbox(ctx, p.config.ConnectionConfig, sandboxID, ReadyOptions{
-			Timeout:         p.config.AcquireReadyTimeout,
-			PollingInterval: p.config.AcquireHealthCheckPollingInterval,
-			HealthCheck:     p.adaptAcquireHealthCheck(),
-		})
+		return ConnectSandbox(ctx, p.config.ConnectionConfig, sandboxID)
 	}
-	if err != nil {
-		return nil, err
-	}
-	if opts.SandboxTimeout > 0 {
-		if _, err := sb.Renew(ctx, opts.SandboxTimeout); err != nil {
-			_ = sb.Close()
-			return nil, fmt.Errorf("opensandbox: pool acquire: renew after connect failed: %w", err)
-		}
-	}
-	return sb, nil
+	return ConnectSandbox(ctx, p.config.ConnectionConfig, sandboxID, ReadyOptions{
+		Timeout:         p.config.AcquireReadyTimeout,
+		PollingInterval: p.config.AcquireHealthCheckPollingInterval,
+		HealthCheck:     p.adaptAcquireHealthCheck(),
+	})
 }
 
 func (p *DefaultSandboxPool) directCreate(ctx context.Context, opts AcquireOptions) (*Sandbox, error) {

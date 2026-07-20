@@ -235,19 +235,14 @@ class SandboxPoolSync:
                         ),
                         skip_health_check=self._config.acquire_skip_health_check,
                     )
-                    if sandbox_timeout is not None:
-                        sandbox.renew(sandbox_timeout)
-                    self._ensure_pool_namespace_active_after_create(sandbox)
-                    self._schedule_kill_discarded_alive(
-                        pool_name, tuple(pending_kill), source="acquire"
-                    )
-                    return sandbox
                 except PoolDestroyedException:
                     self._schedule_kill_discarded_alive(
                         pool_name, tuple(pending_kill), source="acquire"
                     )
                     raise
                 except Exception as exc:
+                    # Connect / readiness / health-check failure — the idle candidate itself
+                    # is unusable. Remove it, best-effort kill, then let the loop try the next.
                     last_idle_connect_failure = exc
                     self._state_store.remove_idle(pool_name, sandbox_id)
                     try:
@@ -255,9 +250,6 @@ class SandboxPoolSync:
                             self._sandbox_manager.kill_sandbox(sandbox_id)
                     except Exception:
                         pass
-                    # Re-check lifecycle between iterations so an in-flight shutdown /
-                    # namespace destroy short-circuits the retry loop instead of paying
-                    # another ready-timeout.
                     if self._lifecycle_state != PoolLifecycleState.RUNNING:
                         state = self._lifecycle_state
                         self._raise_if_pool_namespace_destroyed()
@@ -268,6 +260,42 @@ class SandboxPoolSync:
                             f"Cannot acquire when pool state is {state.value}"
                         ) from exc
                     self._ensure_pool_namespace_active()
+                    continue
+                # Connect + readiness succeeded. From here on the sandbox is a healthy,
+                # borrowable idle: any failure below (renew rejection, namespace fenced) is
+                # NOT a candidate-specific problem, so we must not treat it as "stale idle"
+                # and burn another retry. Dispose the sandbox and surface the error.
+                try:
+                    if sandbox_timeout is not None:
+                        sandbox.renew(sandbox_timeout)
+                    self._ensure_pool_namespace_active_after_create(sandbox)
+                except PoolDestroyedException:
+                    self._schedule_kill_discarded_alive(
+                        pool_name, tuple(pending_kill), source="acquire"
+                    )
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "Acquire renew failed after idle connect; not retrying "
+                        "(renew errors are not candidate-specific): "
+                        "pool_name=%s sandbox_id=%s policy=%s error=%s",
+                        pool_name,
+                        sandbox_id,
+                        policy.value,
+                        exc,
+                    )
+                    try:
+                        sandbox.close()
+                    except Exception:
+                        pass
+                    self._schedule_kill_discarded_alive(
+                        pool_name, tuple(pending_kill), source="acquire"
+                    )
+                    raise
+                self._schedule_kill_discarded_alive(
+                    pool_name, tuple(pending_kill), source="acquire"
+                )
+                return sandbox
 
             # Reached end of loop without a successful acquire. Fire deferred cleanup so the
             # discarded-alive sandboxes do not linger; both the raise and the direct-create

@@ -613,6 +613,35 @@ async def test_async_acquire_retry_next_idle_then_create_empty_falls_through_imm
         await pool.shutdown(False)
 
 
+async def test_async_acquire_retry_next_idle_does_not_retry_when_renew_fails() -> None:
+    """Regression: renew failure against a healthy connected sandbox must NOT trigger the
+    retry loop to drain more idle candidates. Renew rejections come from the lifecycle API,
+    not the sandbox itself; retrying another idle cannot fix them.
+    """
+    FakeAsyncSandbox.reset()
+    FakeAsyncSandbox.fail_renew = True
+    store = InMemoryAsyncPoolStateStore()
+    manager = FakeAsyncManager()
+    for i in range(3):
+        await store.put_idle("pool", f"healthy-{i}")
+    pool = _create_pool(
+        max_idle=0, store=store, manager=manager, max_acquire_retries=5
+    )
+    await pool.start()
+    try:
+        with pytest.raises(RuntimeError, match="renew failed"):
+            await pool.acquire(
+                sandbox_timeout=timedelta(minutes=5),
+                policy=AcquirePolicy.RETRY_NEXT_IDLE,
+            )
+        counters = await store.snapshot_counters("pool")
+        assert counters.idle_count == 2
+        assert manager.killed == []
+    finally:
+        FakeAsyncSandbox.fail_renew = False
+        await pool.shutdown(False)
+
+
 async def test_async_pool_config_rejects_max_acquire_retries_below_one() -> None:
     from opensandbox.pool_types import AsyncPoolConfig
 

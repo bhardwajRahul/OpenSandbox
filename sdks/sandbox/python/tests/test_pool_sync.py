@@ -607,6 +607,36 @@ def test_acquire_retry_next_idle_then_create_empty_falls_through_immediately() -
         pool.shutdown(False)
 
 
+def test_acquire_retry_next_idle_does_not_retry_when_renew_fails() -> None:
+    """Regression: renew failure against a healthy connected sandbox must NOT trigger the
+    retry loop to drain more idle candidates. Retrying another idle cannot fix a lifecycle-
+    API renew rejection.
+    """
+    FakeSandbox.reset()
+    FakeSandbox.fail_renew = True
+    store = InMemoryPoolStateStore()
+    manager = FakeManager()
+    for i in range(3):
+        store.put_idle("pool", f"healthy-{i}")
+    pool = _create_pool(max_idle=0, store=store, manager=manager, max_acquire_retries=5)
+    pool.start()
+    try:
+        with pytest.raises(RuntimeError, match="renew failed"):
+            pool.acquire(
+                sandbox_timeout=timedelta(minutes=5),
+                policy=AcquirePolicy.RETRY_NEXT_IDLE,
+            )
+        # Only ONE candidate was taken and connected. Renew failed, but the loop must NOT
+        # have advanced through the other two healthy idles.
+        assert store.snapshot_counters("pool").idle_count == 2
+        # And the connected sandbox must NOT have been killed (still healthy from the
+        # pool's perspective — the only problem was renew, which is not candidate-specific).
+        assert manager.killed == []
+    finally:
+        FakeSandbox.fail_renew = False
+        pool.shutdown(False)
+
+
 def test_pool_config_rejects_max_acquire_retries_below_one() -> None:
     with pytest.raises(ValueError, match="max_acquire_retries must be >= 1"):
         PoolConfig(

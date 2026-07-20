@@ -248,8 +248,9 @@ class SandboxPool internal constructor(
                 }
                 lastSandboxId = sandboxId
                 attemptedAny = true
+                val sandbox: Sandbox
                 try {
-                    val sandbox =
+                    sandbox =
                         Sandbox.connector()
                             .sandboxId(sandboxId)
                             .connectTimeout(config.acquireReadyTimeout)
@@ -259,25 +260,12 @@ class SandboxPool internal constructor(
                             .run {
                                 config.acquireHealthCheck?.let { healthCheck(it) } ?: this
                             }.connect()
-                    sandboxTimeout?.let { sandbox.renew(it) }
-                    ensurePoolNamespaceActiveOrDispose(sandbox)
-                    // Candidate is connected and (optionally) renewed. Now safe to clean up the
-                    // discarded-alive sandboxes; offload to the warmup executor so the caller
-                    // does not wait for N kill RPCs.
-                    scheduleKillDiscardedAlive(poolName, pendingKill, source = "acquire")
-                    logger.debug(
-                        "Acquire from idle: pool_name={} sandbox_id={} policy={} attempt={}/{}",
-                        poolName,
-                        sandboxId,
-                        policy,
-                        attempt,
-                        maxAttempts,
-                    )
-                    return sandbox
                 } catch (e: PoolDestroyedException) {
                     scheduleKillDiscardedAlive(poolName, pendingKill, source = "acquire")
                     throw e
                 } catch (e: Exception) {
+                    // Connect / readiness / health-check failure — the idle candidate itself is
+                    // unusable. Remove it, best-effort kill, then let the loop try the next.
                     lastIdleConnectFailure = e
                     logger.warn(
                         "Idle connect failed (stale or unreachable), removed from pool: " +
@@ -304,7 +292,51 @@ class SandboxPool internal constructor(
                         throw PoolNotRunningException("Cannot acquire when pool state is $state")
                     }
                     ensurePoolNamespaceActive()
+                    continue
                 }
+                // Connect + readiness succeeded. From here on the sandbox is a healthy, borrowable
+                // idle: any failure below (renew rejection, namespace fenced) is NOT a candidate-
+                // specific problem, so we must not treat it as "stale idle" and burn another retry.
+                // Dispose the sandbox and rethrow instead.
+                try {
+                    sandboxTimeout?.let { sandbox.renew(it) }
+                    ensurePoolNamespaceActiveOrDispose(sandbox)
+                } catch (e: PoolDestroyedException) {
+                    scheduleKillDiscardedAlive(poolName, pendingKill, source = "acquire")
+                    throw e
+                } catch (e: Exception) {
+                    // Renew failed against a healthy sandbox. Retrying another idle will not fix a
+                    // lifecycle-API renew rejection, so we must not remove/kill this idle nor loop.
+                    // Close the just-connected sandbox best-effort and surface the error.
+                    logger.warn(
+                        "Acquire renew failed after idle connect; not retrying (renew errors are " +
+                            "not candidate-specific): pool_name={} sandbox_id={} policy={} error={}",
+                        poolName,
+                        sandboxId,
+                        policy,
+                        e.message,
+                    )
+                    try {
+                        sandbox.close()
+                    } catch (_: Exception) {
+                        // best-effort resource release
+                    }
+                    scheduleKillDiscardedAlive(poolName, pendingKill, source = "acquire")
+                    throw e
+                }
+                // Candidate is connected and renewed. Now safe to clean up the discarded-alive
+                // sandboxes; offload to the warmup executor so the caller does not wait for
+                // N kill RPCs.
+                scheduleKillDiscardedAlive(poolName, pendingKill, source = "acquire")
+                logger.debug(
+                    "Acquire from idle: pool_name={} sandbox_id={} policy={} attempt={}/{}",
+                    poolName,
+                    sandboxId,
+                    policy,
+                    attempt,
+                    maxAttempts,
+                )
+                return sandbox
             }
             // Reaching here means we did not return a sandbox from idle. Fire the deferred cleanup
             // so the discarded-alive sandboxes do not linger; both the fail-fast and direct-create

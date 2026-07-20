@@ -419,6 +419,112 @@ func TestEffectiveMaxIdleAttempts(t *testing.T) {
 	}
 }
 
+// renewFailingLifecycleServer accepts all sandbox ids as healthy on connect / endpoint fetch,
+// but returns 500 for POST /renew-expiration. Used to verify that a renew failure after a
+// successful connect does NOT trigger the retry loop to drain more healthy idles.
+func renewFailingLifecycleServer(t *testing.T, execdURL string) (*httptest.Server, *int32) {
+	t.Helper()
+	var renewAttempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case r.Method == http.MethodPost && path == "/v1/sandboxes":
+			jsonResponse(w, http.StatusCreated, SandboxInfo{
+				ID:         fmt.Sprintf("sbx-pool-%d", time.Now().UnixNano()),
+				Status:     SandboxStatus{State: StateRunning},
+				Entrypoint: []string{"tail", "-f", "/dev/null"},
+				CreatedAt:  time.Now().UTC(),
+			})
+		case r.Method == http.MethodGet && strings.HasPrefix(path, "/v1/sandboxes/") && strings.Contains(path, "/endpoints/"):
+			jsonResponse(w, http.StatusOK, Endpoint{
+				Endpoint: execdURL,
+				Headers:  map[string]string{"X-EXECD-ACCESS-TOKEN": "test-token"},
+			})
+		case r.Method == http.MethodGet && strings.HasPrefix(path, "/v1/sandboxes/"):
+			parts := strings.Split(path, "/")
+			sandboxID := parts[len(parts)-1]
+			jsonResponse(w, http.StatusOK, SandboxInfo{
+				ID:         sandboxID,
+				Status:     SandboxStatus{State: StateRunning},
+				Entrypoint: []string{"tail", "-f", "/dev/null"},
+				CreatedAt:  time.Now().UTC(),
+			})
+		case r.Method == http.MethodDelete && strings.HasPrefix(path, "/v1/sandboxes/"):
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && strings.HasSuffix(path, "/renew-expiration"):
+			atomic.AddInt32(&renewAttempts, 1)
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"code":"internal","message":"renew rejected"}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &renewAttempts
+}
+
+// Regression for the PR review point: a renew failure after a successful connect is NOT a
+// candidate-specific problem. Retrying another idle cannot fix a lifecycle-API renew rejection
+// and used to drain healthy idle entries. Verify that:
+//  1. Only ONE candidate is connected (no retry after renew failure).
+//  2. The remaining idle entries stay in the pool.
+//  3. The renew error surfaces to the caller (not wrapped as PoolAcquireFailedError).
+func TestPool_Acquire_RetryNextIdle_RenewFailure_DoesNotRetry(t *testing.T) {
+	execdSrv := newMockExecdServer(t)
+	lifecycleSrv, renewAttempts := renewFailingLifecycleServer(t, execdSrv.URL)
+
+	pool := newTestPool(t, lifecycleSrv.URL, func(b *SandboxPoolBuilder) {
+		b.MaxIdle(0)
+		b.ReconcileInterval(time.Hour)
+		b.MaxAcquireRetries(5)
+	})
+	ctx := context.Background()
+
+	if err := pool.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer pool.Shutdown(ctx, false)
+
+	for i := 0; i < 3; i++ {
+		if err := pool.config.StateStore.PutIdle(ctx, "test-pool", fmt.Sprintf("healthy-%d", i)); err != nil {
+			t.Fatalf("PutIdle failed: %v", err)
+		}
+	}
+
+	policy := AcquirePolicyRetryNextIdle
+	_, err := pool.Acquire(ctx, AcquireOptions{
+		SkipHealthCheck: true,
+		Policy:          &policy,
+		SandboxTimeout:  1 * time.Minute, // triggers post-connect Renew
+	})
+	if err == nil {
+		t.Fatal("expected renew failure to surface as an error, got nil")
+	}
+	// Renew errors must NOT be wrapped as PoolAcquireFailedError (that would imply the idle
+	// candidate was stale, misleading callers and metrics).
+	var failed *PoolAcquireFailedError
+	if errors.As(err, &failed) {
+		t.Errorf("renew failure surfaced as *PoolAcquireFailedError; expected raw renew error. err=%v", err)
+	}
+	if !strings.Contains(err.Error(), "renew") {
+		t.Errorf("error should mention renew; got: %v", err)
+	}
+
+	// Exactly one renew attempt must have hit the server — retry did NOT drain the other
+	// two healthy idles.
+	if got := atomic.LoadInt32(renewAttempts); got != 1 {
+		t.Errorf("renew attempts = %d, want 1 (renew failure must not trigger idle retry)", got)
+	}
+	// Two healthy idles must remain in the pool (only the taken one is out).
+	snap, snapErr := pool.config.StateStore.SnapshotCounters(ctx, "test-pool")
+	if snapErr != nil {
+		t.Fatalf("SnapshotCounters failed: %v", snapErr)
+	}
+	if snap.IdleCount != 2 {
+		t.Errorf("IdleCount = %d, want 2 (renew failure must not drain remaining idles)", snap.IdleCount)
+	}
+}
+
 func TestPolicyFallsThroughToDirectCreate(t *testing.T) {
 	cases := map[AcquirePolicy]bool{
 		AcquirePolicyDirectCreate:            true,
