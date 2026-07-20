@@ -98,7 +98,7 @@
 
   <!-- Sandbox -->
   <rect x="720" y="380" width="170" height="110" rx="8" fill="#ffffff" stroke="#94a3b8"/>
-  <text x="805" y="410" text-anchor="middle" font-weight="600" fill="#0f172a">Sandbox pod</text>
+  <text x="805" y="410" text-anchor="middle" font-weight="600" fill="#0f172a">Sandbox</text>
   <text x="805" y="435" text-anchor="middle" font-size="12" fill="#475569">receives cleaned</text>
   <text x="805" y="453" text-anchor="middle" font-size="12" fill="#475569">request</text>
   <text x="805" y="475" text-anchor="middle" font-size="11" fill="#64748b">(no auth header)</text>
