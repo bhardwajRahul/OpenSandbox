@@ -188,7 +188,7 @@ class SandboxPoolAsync:
                 raise PoolNotRunningException(
                     f"Cannot acquire when pool state is {state.value}"
                 )
-            await self._ensure_pool_namespace_active()
+            await self._ensure_pool_namespace_active_for_acquire(policy)
             pool_name = self._config.pool_name
             max_attempts = effective_max_idle_attempts(
                 policy, self._config.max_acquire_retries
@@ -352,7 +352,7 @@ class SandboxPoolAsync:
                 raise PoolEmptyException(
                     f"Cannot acquire: {reason}; policy is {policy.value}"
                 )
-            return await self._direct_create(sandbox_timeout)
+            return await self._direct_create(sandbox_timeout, policy=policy)
         finally:
             await self._end_operation()
 
@@ -568,8 +568,16 @@ class SandboxPoolAsync:
             skip_health_check=self._config.warmup_skip_health_check,
         )
 
-    async def _direct_create(self, sandbox_timeout: timedelta | None) -> Sandbox:
-        await self._ensure_pool_namespace_active()
+    async def _direct_create(
+        self,
+        sandbox_timeout: timedelta | None,
+        policy: AcquirePolicy = AcquirePolicy.DIRECT_CREATE,
+    ) -> Sandbox:
+        # policy-aware namespace check: if the state store is down and the policy is a
+        # fallthrough one, treat destroy-state as unknown and proceed to direct-create
+        # instead of surfacing the outage. See _ensure_pool_namespace_active_for_acquire
+        # for the full rationale.
+        await self._ensure_pool_namespace_active_for_acquire(policy)
         if self._config.sandbox_creator is not None:
             sandbox = await self._build_sandbox_from_creator(
                 creator=self._config.sandbox_creator,
@@ -588,7 +596,7 @@ class SandboxPoolAsync:
                     finally:
                         await sandbox.close()
                     raise
-            await self._ensure_pool_namespace_active_after_create(sandbox)
+            await self._ensure_pool_namespace_active_after_create(sandbox, policy=policy)
             return sandbox
 
         spec = self._creation_spec
@@ -619,7 +627,7 @@ class SandboxPoolAsync:
                 finally:
                     await sandbox.close()
                 raise
-        await self._ensure_pool_namespace_active_after_create(sandbox)
+        await self._ensure_pool_namespace_active_after_create(sandbox, policy=policy)
         return sandbox
 
     async def _ensure_pool_namespace_active(self) -> None:
@@ -627,6 +635,36 @@ class SandboxPoolAsync:
         if state != PoolDestroyState.ACTIVE:
             raise PoolDestroyedException(
                 f"Pool namespace is {state.value}: pool_name={self._config.pool_name}"
+            )
+
+    async def _ensure_pool_namespace_active_for_acquire(
+        self, policy: AcquirePolicy
+    ) -> None:
+        """Namespace-active check on the acquire path with graceful degradation.
+
+        Same as :meth:`_ensure_pool_namespace_active`, but when the state store itself
+        is unavailable (``PoolStateStoreUnavailableException``) and the effective
+        ``policy`` falls through to direct-create on empty idle, we treat the destroy
+        state as *unknown* and allow the acquire to proceed. This is the necessary
+        counterpart to the state-store-outage fallthrough already implemented at the
+        ``try_take_idle`` and ``_direct_create`` call sites (see OSEP-0005 error-code
+        matrix): without it a full Redis outage would short-circuit acquire before the
+        fallthrough branch could run, making ``RETRY_NEXT_IDLE_THEN_CREATE`` and
+        ``DIRECT_CREATE`` less available than documented.
+
+        Fail-closed behavior for non-fallthrough policies (``FAIL_FAST`` /
+        ``RETRY_NEXT_IDLE``) is preserved: the outage is surfaced as-is so callers
+        can react.
+        """
+        try:
+            await self._ensure_pool_namespace_active()
+        except PoolStateStoreUnavailableException:
+            if not policy_falls_through_to_direct_create(policy):
+                raise
+            logger.warning(
+                "acquire: state store unavailable during namespace check, "
+                "assuming ACTIVE and degrading to direct-create per policy=%s",
+                policy.value,
             )
 
     async def _raise_if_pool_namespace_destroyed(self) -> None:
@@ -637,9 +675,52 @@ class SandboxPoolAsync:
         except Exception:
             return
 
-    async def _ensure_pool_namespace_active_after_create(self, sandbox: Sandbox) -> None:
+    async def _ensure_pool_namespace_active_after_create(
+        self,
+        sandbox: Sandbox,
+        policy: AcquirePolicy | None = None,
+    ) -> None:
+        """Post-create fence check.
+
+        If the state store itself is unavailable we cannot tell whether the pool was
+        destroyed, so under a fallthrough ``policy`` we assume ACTIVE and keep the
+        freshly-created sandbox (mirrors the OSEP-0005 acquire-outage semantics).
+        Non-fallthrough policies keep the original fail-closed behavior for backward
+        compatibility.
+        """
         try:
             await self._ensure_pool_namespace_active()
+        except PoolStateStoreUnavailableException:
+            if policy is not None and policy_falls_through_to_direct_create(policy):
+                logger.warning(
+                    "acquire: state store unavailable during post-create fence check, "
+                    "keeping sandbox and degrading per policy=%s sandbox_id=%s",
+                    policy.value,
+                    sandbox.id,
+                )
+                return
+            # Fall through to the fence-triggered cleanup path below.
+            try:
+                await sandbox.kill()
+            except Exception as exc:
+                logger.warning(
+                    "Pool sandbox cleanup after store-outage fence failed: pool_name=%s "
+                    "sandbox_id=%s operation=kill error=%s",
+                    self._config.pool_name,
+                    sandbox.id,
+                    exc,
+                )
+            try:
+                await sandbox.close()
+            except Exception as exc:
+                logger.warning(
+                    "Pool sandbox cleanup after store-outage fence failed: pool_name=%s "
+                    "sandbox_id=%s operation=close error=%s",
+                    self._config.pool_name,
+                    sandbox.id,
+                    exc,
+                )
+            raise
         except BaseException:
             try:
                 await sandbox.kill()

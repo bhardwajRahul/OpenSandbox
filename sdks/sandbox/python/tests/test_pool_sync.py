@@ -778,6 +778,111 @@ def test_acquire_retry_next_idle_raises_on_state_store_outage() -> None:
         pool.shutdown(False)
 
 
+def test_acquire_then_create_falls_through_when_full_state_store_outage_also_fails_namespace_check() -> (
+    None
+):
+    """Regression for Codex round-5 P2: previously, when the full state store was down
+    (Redis outage affecting *all* methods, not just try_take_idle), acquire aborted at
+    the pre-loop `_ensure_pool_namespace_active` call before the fallthrough branch
+    could run. RETRY_NEXT_IDLE_THEN_CREATE is documented to degrade to direct-create
+    during store outages (OSEP-0005); this test proves the namespace check no longer
+    breaks that guarantee.
+    """
+    from opensandbox.exceptions import PoolStateStoreUnavailableException
+
+    FakeSandbox.reset()
+
+    class OutageStore(InMemoryPoolStateStore):
+        def __init__(self) -> None:
+            super().__init__()
+            # Only start raising after pool.start() completes so setup still works;
+            # this mirrors a real Redis instance that crashes after the pool warms.
+            self._outage = False
+
+        def try_take_idle(self, pool_name: str) -> str | None:
+            if self._outage:
+                raise PoolStateStoreUnavailableException(
+                    "TryTakeIdle", RuntimeError("redis unavailable")
+                )
+            return super().try_take_idle(pool_name)
+
+        def try_take_idle_min_ttl(  # type: ignore[override]
+            self, pool_name: str, min_remaining_ttl: object
+        ) -> object:
+            if self._outage:
+                raise PoolStateStoreUnavailableException(
+                    "TryTakeIdleWithMinTTL", RuntimeError("redis unavailable")
+                )
+            return super().try_take_idle_min_ttl(pool_name, min_remaining_ttl)  # type: ignore[arg-type]
+
+        def get_destroy_state(self, pool_name: str):  # type: ignore[override]
+            if self._outage:
+                raise PoolStateStoreUnavailableException(
+                    "GetDestroyState", RuntimeError("redis unavailable")
+                )
+            return super().get_destroy_state(pool_name)
+
+    store = OutageStore()
+    pool = _create_pool(max_idle=0, store=store)
+    pool.start()
+    store._outage = True
+    try:
+        sandbox = pool.acquire(policy=AcquirePolicy.RETRY_NEXT_IDLE_THEN_CREATE)
+        assert sandbox.id.startswith("created-")
+    finally:
+        store._outage = False
+        pool.shutdown(False)
+
+
+def test_acquire_retry_next_idle_raises_when_full_state_store_outage_also_fails_namespace_check() -> (
+    None
+):
+    """Non-fallthrough counterpart: full state-store outage under RETRY_NEXT_IDLE must
+    still surface PoolStateStoreUnavailableException (fail-closed)."""
+    from opensandbox.exceptions import PoolStateStoreUnavailableException
+
+    FakeSandbox.reset()
+
+    class OutageStore(InMemoryPoolStateStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self._outage = False
+
+        def try_take_idle(self, pool_name: str) -> str | None:
+            if self._outage:
+                raise PoolStateStoreUnavailableException(
+                    "TryTakeIdle", RuntimeError("redis unavailable")
+                )
+            return super().try_take_idle(pool_name)
+
+        def try_take_idle_min_ttl(  # type: ignore[override]
+            self, pool_name: str, min_remaining_ttl: object
+        ) -> object:
+            if self._outage:
+                raise PoolStateStoreUnavailableException(
+                    "TryTakeIdleWithMinTTL", RuntimeError("redis unavailable")
+                )
+            return super().try_take_idle_min_ttl(pool_name, min_remaining_ttl)  # type: ignore[arg-type]
+
+        def get_destroy_state(self, pool_name: str):  # type: ignore[override]
+            if self._outage:
+                raise PoolStateStoreUnavailableException(
+                    "GetDestroyState", RuntimeError("redis unavailable")
+                )
+            return super().get_destroy_state(pool_name)
+
+    store = OutageStore()
+    pool = _create_pool(max_idle=0, store=store)
+    pool.start()
+    store._outage = True
+    try:
+        with pytest.raises(PoolStateStoreUnavailableException):
+            pool.acquire(policy=AcquirePolicy.RETRY_NEXT_IDLE)
+    finally:
+        store._outage = False
+        pool.shutdown(False)
+
+
 def test_pool_config_rejects_max_acquire_retries_below_one() -> None:
     with pytest.raises(ValueError, match="max_acquire_retries must be >= 1"):
         PoolConfig(

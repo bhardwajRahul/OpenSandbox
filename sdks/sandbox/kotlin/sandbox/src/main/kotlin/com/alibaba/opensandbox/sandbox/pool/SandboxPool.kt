@@ -223,7 +223,7 @@ class SandboxPool internal constructor(
                 logger.info("Pool not running after acquire started, rejected: pool_name={} state={}", config.poolName, state)
                 throw PoolNotRunningException("Cannot acquire when pool state is $state")
             }
-            ensurePoolNamespaceActive()
+            ensurePoolNamespaceActiveForAcquire(policy)
             val poolName = config.poolName
             val maxAttempts = effectiveMaxIdleAttempts(policy)
             // Accumulate discarded-alive sandbox IDs across all take iterations so we schedule
@@ -401,9 +401,9 @@ class SandboxPool internal constructor(
                 }
                 throw PoolEmptyException("Cannot acquire: $reason; policy is $policy")
             }
-            ensurePoolNamespaceActive()
+            ensurePoolNamespaceActiveForAcquire(policy)
             logger.debug("Acquire direct create: pool_name={} reason={} policy={}", poolName, reason, policy)
-            return directCreate(sandboxTimeout)
+            return directCreate(sandboxTimeout, policy)
         } finally {
             endOperation()
         }
@@ -740,8 +740,15 @@ class SandboxPool internal constructor(
         return builder.build()
     }
 
-    private fun directCreate(sandboxTimeout: Duration?): Sandbox {
-        ensurePoolNamespaceActive()
+    private fun directCreate(
+        sandboxTimeout: Duration?,
+        policy: AcquirePolicy = AcquirePolicy.DIRECT_CREATE,
+    ): Sandbox {
+        // policy-aware namespace check: if the state store is down and the policy is a
+        // fallthrough one, treat destroy-state as unknown and proceed to direct-create
+        // instead of surfacing the outage. See ensurePoolNamespaceActiveForAcquire for
+        // the full rationale.
+        ensurePoolNamespaceActiveForAcquire(policy)
         sandboxCreator?.let {
             val sandbox =
                 buildSandboxFromCreator(
@@ -765,7 +772,7 @@ class SandboxPool internal constructor(
                     throw e
                 }
             }
-            ensurePoolNamespaceActiveOrDispose(sandbox)
+            ensurePoolNamespaceActiveOrDispose(sandbox, policy)
             return sandbox
         }
 
@@ -780,9 +787,9 @@ class SandboxPool internal constructor(
             )
         config.acquireHealthCheck?.let { builder.healthCheck(it) }
         val sandbox = builder.build()
+        // Renew is a candidate-specific step; failure means kill+close and rethrow.
         try {
             sandboxTimeout?.let { sandbox.renew(it) }
-            ensurePoolNamespaceActive()
         } catch (e: Exception) {
             try {
                 sandbox.kill()
@@ -791,6 +798,10 @@ class SandboxPool internal constructor(
             }
             throw e
         }
+        // Post-create fence check uses the policy-aware helper so full state-store
+        // outages degrade correctly under fallthrough policies; on rethrow the helper
+        // has already killed and closed the sandbox.
+        ensurePoolNamespaceActiveOrDispose(sandbox, policy)
         return sandbox
     }
 
@@ -798,6 +809,38 @@ class SandboxPool internal constructor(
         val state = stateStore.getDestroyState(config.poolName)
         if (state != PoolDestroyState.ACTIVE) {
             throw PoolDestroyedException("Pool namespace is $state: poolName=${config.poolName}")
+        }
+    }
+
+    /**
+     * Namespace-active check on the acquire path with graceful degradation.
+     *
+     * Same as [ensurePoolNamespaceActive], but when the state store itself is unavailable
+     * ([PoolStateStoreUnavailableException]) and the effective [policy] falls through to
+     * direct-create on empty idle, we treat the destroy state as *unknown* and allow the
+     * acquire to proceed. This is the necessary counterpart to the state-store-outage
+     * fallthrough already implemented at the `tryTakeIdle` and `directCreate` call sites
+     * (see OSEP-0005 error-code matrix): without it a full Redis outage would short-circuit
+     * acquire before the fallthrough branch could run, making `RETRY_NEXT_IDLE_THEN_CREATE`
+     * and `DIRECT_CREATE` less available than documented.
+     *
+     * Fail-closed behavior for non-fallthrough policies ([AcquirePolicy.FAIL_FAST] /
+     * [AcquirePolicy.RETRY_NEXT_IDLE]) is preserved: the outage is surfaced as-is so
+     * callers can react.
+     */
+    private fun ensurePoolNamespaceActiveForAcquire(policy: AcquirePolicy) {
+        try {
+            ensurePoolNamespaceActive()
+        } catch (e: PoolStateStoreUnavailableException) {
+            if (!policyFallsThroughToDirectCreate(policy)) {
+                throw e
+            }
+            logger.warn(
+                "Acquire: state store unavailable during namespace check, " +
+                    "assuming ACTIVE and degrading to direct-create per policy={} error={}",
+                policy,
+                e.message,
+            )
         }
     }
 
@@ -813,9 +856,54 @@ class SandboxPool internal constructor(
 
     private fun isPoolNamespaceActive(): Boolean = stateStore.getDestroyState(config.poolName) == PoolDestroyState.ACTIVE
 
-    private fun ensurePoolNamespaceActiveOrDispose(sandbox: Sandbox) {
+    /**
+     * Post-create fence check.
+     *
+     * If [policy] is a fallthrough policy and the state store itself is unavailable
+     * ([PoolStateStoreUnavailableException]), we cannot tell whether the pool was
+     * destroyed, so we assume ACTIVE and keep the freshly-created sandbox (mirrors
+     * the OSEP-0005 acquire-outage semantics). Non-fallthrough policies (and callers
+     * that pass `policy=null`) keep the original fail-closed behavior for backward
+     * compatibility.
+     */
+    private fun ensurePoolNamespaceActiveOrDispose(
+        sandbox: Sandbox,
+        policy: AcquirePolicy? = null,
+    ) {
         try {
             ensurePoolNamespaceActive()
+        } catch (e: PoolStateStoreUnavailableException) {
+            if (policy != null && policyFallsThroughToDirectCreate(policy)) {
+                logger.warn(
+                    "Acquire: state store unavailable during post-create fence check, " +
+                        "keeping sandbox and degrading per policy={} sandbox_id={} error={}",
+                    policy,
+                    sandbox.id,
+                    e.message,
+                )
+                return
+            }
+            try {
+                sandbox.kill()
+            } catch (cleanupError: Exception) {
+                logger.warn(
+                    "Pool sandbox cleanup after store-outage fence failed: pool_name={} sandbox_id={} operation=kill error={}",
+                    config.poolName,
+                    sandbox.id,
+                    cleanupError.message,
+                )
+            }
+            try {
+                sandbox.close()
+            } catch (cleanupError: Exception) {
+                logger.warn(
+                    "Pool sandbox cleanup after store-outage fence failed: pool_name={} sandbox_id={} operation=close error={}",
+                    config.poolName,
+                    sandbox.id,
+                    cleanupError.message,
+                )
+            }
+            throw e
         } catch (e: Exception) {
             try {
                 sandbox.kill()
